@@ -1,5 +1,5 @@
 name: Simson
-version: "1.0.2"
+version: "1.0.3"
 slug: ha_voip_engine
 description: Embedded VoIP engine for the HA VoIP integration (SIP/TURN/WebRTC)
 url: https://github.com/nitish-mp3/simson
@@ -15,17 +15,8 @@ arch:
   - amd64
   - armv7
   - armhf
-ports:
-  5060/udp: 5060
-  5061/tcp: 5061
-  3478/udp: 3478
-  5349/tcp: 5349
-  8443/tcp: 8443
-  50051/tcp: 50051
-  9090/tcp: 9090
 map:
   - config:rw
-  - data:rw
 options:
   log_level: info
   log_format: json
