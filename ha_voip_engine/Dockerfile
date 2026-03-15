@@ -3,10 +3,13 @@ ARG BUILD_FROM
 # =============================================================================
 # Stage 1: Compile the voip-engine Rust binary
 #
-# Run `bash prepare_addon.sh` from the repo root first to copy the Rust source
-# into ha_voip_engine/voip-engine/ before building this image.
+# Source is cloned from the repository at build time — no manual file copying
+# needed. BUILD_VERSION (injected by HA supervisor) busts the Docker cache
+# on every version bump so you always get fresh code.
 # =============================================================================
 FROM rust:1.75-bookworm AS builder
+
+ARG BUILD_VERSION=dev
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
@@ -14,21 +17,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         pkg-config \
         libssl-dev \
         protobuf-compiler \
+        git \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
 
-# Cache dependency compilation: copy manifests first, build dummy, then full source
-COPY voip-engine/Cargo.toml voip-engine/Cargo.lock* ./
+# Clone the repository (cache is busted by BUILD_VERSION on each release)
+RUN echo "Building version: ${BUILD_VERSION}" \
+    && git clone --depth 1 https://github.com/nitish-mp3/simson.git /repo \
+    && cp -r /repo/voip-engine/. /build/ \
+    && rm -rf /repo
+
+# Pre-build dependencies with a dummy main (layer-cache optimisation)
 RUN mkdir -p src && echo 'fn main(){}' > src/main.rs \
     && cargo build --release 2>/dev/null || true \
     && rm -rf src
 
-# Copy actual source and build
-COPY voip-engine/src/ ./src/
-COPY voip-engine/build.rs ./
-COPY voip-engine/proto/ ./proto/
-
+# Rebuild with the real source (touch forces re-link)
 RUN touch src/main.rs \
     && cargo build --release \
     && strip ./target/release/voip-engine
@@ -38,7 +43,7 @@ RUN touch src/main.rs \
 # =============================================================================
 FROM ${BUILD_FROM}
 
-# Install only the runtime libraries the binary needs
+# Runtime libraries
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libssl3 \
         ca-certificates \
@@ -47,11 +52,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get purge -y --auto-remove
 
-# Copy compiled binary
+# Install compiled binary
 COPY --from=builder /build/target/release/voip-engine /usr/local/bin/voip-engine
 RUN chmod 755 /usr/local/bin/voip-engine
 
-# Create data directories
+# Data directories (add-on data dir /data is auto-mounted by HA)
 RUN mkdir -p /data/voip/recordings /data/voip/certs
 
 # Entry script
