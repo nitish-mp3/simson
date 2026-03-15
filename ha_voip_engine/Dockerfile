@@ -28,14 +28,8 @@ RUN echo "Building version: ${BUILD_VERSION}" \
     && cp -r /repo/voip-engine/. /build/ \
     && rm -rf /repo
 
-# Pre-build dependencies with a dummy main (layer-cache optimisation)
-RUN mkdir -p src && echo 'fn main(){}' > src/main.rs \
-    && cargo build --release 2>/dev/null || true \
-    && rm -rf src
-
-# Rebuild with the real source (touch forces re-link)
-RUN touch src/main.rs \
-    && cargo build --release \
+# Build the release binary
+RUN cargo build --release \
     && strip ./target/release/voip-engine
 
 # =============================================================================
