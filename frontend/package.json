@@ -1,6 +1,6 @@
 {
   "name": "ha-voip-card",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Home Assistant VoIP Lovelace Card — SIP calling UI with WebRTC",
   "private": true,
   "type": "module",

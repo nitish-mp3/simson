@@ -10,7 +10,7 @@ manually configuring Asterisk, coturn, or external servers.
 
 ## Release Milestones
 
-### v1.0.0 — MVP (Sprints 1-4)
+### v1.0.2 — MVP (Sprints 1-4)
 - Local extension-to-extension calling via WebRTC
 - Embedded TURN server with port 443 fallback
 - Self-signed certificate manager for LAN use
