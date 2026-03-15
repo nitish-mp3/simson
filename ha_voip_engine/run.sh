@@ -1,17 +1,27 @@
-#!/usr/bin/with-contenv sh
-set -eu
+#!/usr/bin/with-contenv bash
+# shellcheck shell=bash
+set -euo pipefail
 
 DATA_DIR="/data/voip"
 LOG_LEVEL="info"
+LOG_FORMAT="json"
 
-mkdir -p "${DATA_DIR}"
+# Create required data directories
+mkdir -p "${DATA_DIR}" "${DATA_DIR}/recordings" "${DATA_DIR}/certs"
 
-if [ -f /data/options.json ]; then
-    # Extract configured log level without requiring jq.
-    LOG_LEVEL_FROM_OPTIONS=$(grep -o '"log_level"[[:space:]]*:[[:space:]]*"[^"]*"' /data/options.json | head -n1 | sed -E 's/.*"([^"]+)"/\1/' || true)
-    if [ -n "${LOG_LEVEL_FROM_OPTIONS}" ]; then
-        LOG_LEVEL="${LOG_LEVEL_FROM_OPTIONS}"
-    fi
+# Parse options.json written by HA supervisor (requires jq, installed in Dockerfile)
+OPTIONS_FILE="/data/options.json"
+if [ -f "${OPTIONS_FILE}" ] && command -v jq >/dev/null 2>&1; then
+    _val=$(jq -r '.log_level // empty' "${OPTIONS_FILE}" 2>/dev/null || true)
+    [ -n "${_val}" ] && LOG_LEVEL="${_val}"
+
+    _val=$(jq -r '.log_format // empty' "${OPTIONS_FILE}" 2>/dev/null || true)
+    [ -n "${_val}" ] && LOG_FORMAT="${_val}"
 fi
 
-exec /usr/local/bin/voip-engine --data-dir "${DATA_DIR}" --log-level "${LOG_LEVEL}"
+echo "[ha-voip] Starting voip-engine (log-level=${LOG_LEVEL}, log-format=${LOG_FORMAT})"
+
+exec /usr/local/bin/voip-engine \
+    --data-dir "${DATA_DIR}" \
+    --log-level "${LOG_LEVEL}" \
+    --log-format "${LOG_FORMAT}"

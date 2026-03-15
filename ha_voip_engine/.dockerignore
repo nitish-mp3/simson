@@ -1,0 +1,7 @@
+# Exclude Rust build artifacts from the Docker build context
+voip-engine/target/
+voip-engine/.git/
+
+# Exclude local dev files
+*.md
+.gitignore
