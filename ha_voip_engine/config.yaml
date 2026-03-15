@@ -1,8 +1,8 @@
-name: HA VoIP Engine
-version: "1.0.0"
+name: Simson
+version: "1.0.1"
 slug: ha_voip_engine
 description: Embedded VoIP engine for the HA VoIP integration (SIP/TURN/WebRTC)
-url: https://github.com/ha-voip/ha-voip
+url: https://github.com/nitish-mp3/simson
 startup: services
 boot: auto
 init: false
