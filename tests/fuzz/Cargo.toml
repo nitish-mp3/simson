@@ -1,0 +1,38 @@
+[package]
+name = "voip-engine-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.voip-engine]
+path = "../../voip-engine"
+
+[features]
+# Enable structured fuzzing that generates semi-valid SIP / SDP messages
+# via the `Arbitrary` trait instead of pure random bytes.
+structured_fuzz = ["libfuzzer-sys/arbitrary-derive"]
+
+# Each fuzz target corresponds to a [[bin]] entry.
+# Run with: cargo +nightly fuzz run <target_name>
+
+[[bin]]
+name = "fuzz_sip_parser"
+path = "fuzz_sip_parser.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_sdp_parser"
+path = "fuzz_sdp_parser.rs"
+test = false
+doc = false
+
+[workspace]
+# Prevent the fuzz crate from being included in the parent workspace.
+# cargo-fuzz manages this directory independently.

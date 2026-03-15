@@ -1,0 +1,276 @@
+# =============================================================================
+# ha-voip-deployment.yaml
+# Kubernetes Deployment for the VoIP Engine with HA best-practices.
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ha-voip
+  labels:
+    app.kubernetes.io/part-of: ha-voip
+
+---
+# ---------------------------------------------------------------------------
+# ConfigMap - non-sensitive runtime configuration
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: voip-engine-config
+  namespace: ha-voip
+  labels:
+    app.kubernetes.io/name: voip-engine
+    app.kubernetes.io/component: config
+data:
+  config.yaml: |
+    server:
+      log_level: info
+      metrics_addr: "0.0.0.0:9090"
+      grpc_addr: "0.0.0.0:50051"
+      health_addr: "0.0.0.0:9090"
+
+    sip:
+      realm: home.local
+      udp_port: 5060
+      tls_port: 5061
+
+    rtp:
+      port_min: 10000
+      port_max: 20000
+      jitter_buffer_ms: 60
+
+    turn:
+      udp_port: 3478
+      tls_port: 5349
+      realm: home.local
+      max_allocations: 500
+
+    tls:
+      cert_path: /etc/voip-engine/certs/tls.crt
+      key_path: /etc/voip-engine/certs/tls.key
+
+    database:
+      max_connections: 20
+      idle_timeout_secs: 300
+
+    recording:
+      path: /var/lib/voip-engine/recordings
+      format: wav
+      max_duration_secs: 3600
+
+---
+# ---------------------------------------------------------------------------
+# Secret - credentials (base64-encoded placeholders; replace in real deploy)
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+  name: voip-engine-secrets
+  namespace: ha-voip
+  labels:
+    app.kubernetes.io/name: voip-engine
+    app.kubernetes.io/component: secrets
+type: Opaque
+data:
+  # echo -n 'postgres://havoip:changeme@postgres:5432/havoip' | base64
+  DATABASE_URL: cG9zdGdyZXM6Ly9oYXZvaXA6Y2hhbmdlbWVAcG9zdGdyZXM6NTQzMi9oYXZvaXA=
+  # echo -n 'changeme-turn-secret' | base64
+  TURN_AUTH_SECRET: Y2hhbmdlbWUtdHVybi1zZWNyZXQ=
+  # echo -n 'changeme-webhook-secret' | base64
+  WEBHOOK_SECRET: Y2hhbmdlbWUtd2ViaG9vay1zZWNyZXQ=
+  # echo -n 'changeme-api-key' | base64
+  API_KEY: Y2hhbmdlbWUtYXBpLWtleQ==
+
+---
+# ---------------------------------------------------------------------------
+# PersistentVolumeClaim - recordings storage
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: voip-recordings-pvc
+  namespace: ha-voip
+  labels:
+    app.kubernetes.io/name: voip-engine
+    app.kubernetes.io/component: storage
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 50Gi
+
+---
+# ---------------------------------------------------------------------------
+# Deployment - voip-engine
+# ---------------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: voip-engine
+  namespace: ha-voip
+  labels:
+    app.kubernetes.io/name: voip-engine
+    app.kubernetes.io/component: engine
+    app.kubernetes.io/version: "1.0.0"
+spec:
+  replicas: 2
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: voip-engine
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: voip-engine
+        app.kubernetes.io/component: engine
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: voip-engine
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      terminationGracePeriodSeconds: 30
+
+      # Anti-affinity: spread replicas across nodes for HA
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app.kubernetes.io/name
+                      operator: In
+                      values:
+                        - voip-engine
+                topologyKey: kubernetes.io/hostname
+
+      containers:
+        - name: voip-engine
+          image: ha-voip/voip-engine:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: sip-udp
+              containerPort: 5060
+              protocol: UDP
+            - name: sip-tls
+              containerPort: 5061
+              protocol: TCP
+            - name: https
+              containerPort: 8443
+              protocol: TCP
+            - name: turn-udp
+              containerPort: 3478
+              protocol: UDP
+            - name: turn-tls
+              containerPort: 5349
+              protocol: TCP
+            - name: grpc
+              containerPort: 50051
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+
+          env:
+            - name: VOIP_ENGINE_EXTERNAL_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: VOIP_ENGINE_DB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: voip-engine-secrets
+                  key: DATABASE_URL
+            - name: VOIP_ENGINE_TURN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: voip-engine-secrets
+                  key: TURN_AUTH_SECRET
+            - name: VOIP_ENGINE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: voip-engine-secrets
+                  key: API_KEY
+
+          volumeMounts:
+            - name: config
+              mountPath: /etc/voip-engine
+              readOnly: true
+            - name: tls-certs
+              mountPath: /etc/voip-engine/certs
+              readOnly: true
+            - name: recordings
+              mountPath: /var/lib/voip-engine/recordings
+
+          resources:
+            requests:
+              cpu: 500m
+              memory: 256Mi
+            limits:
+              cpu: "2000m"
+              memory: 1Gi
+
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: metrics
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: metrics
+              scheme: HTTP
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 2
+
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: metrics
+              scheme: HTTP
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 12
+
+      volumes:
+        - name: config
+          configMap:
+            name: voip-engine-config
+        - name: tls-certs
+          secret:
+            secretName: voip-engine-tls
+        - name: recordings
+          persistentVolumeClaim:
+            claimName: voip-recordings-pvc
+
+---
+# ---------------------------------------------------------------------------
+# ServiceAccount
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: voip-engine
+  namespace: ha-voip
+  labels:
+    app.kubernetes.io/name: voip-engine

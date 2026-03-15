@@ -1,0 +1,157 @@
+# =============================================================================
+# alert-rules.yml
+# Prometheus alerting rules for HA-VoIP Engine.
+# =============================================================================
+
+groups:
+  - name: voip-engine-alerts
+    interval: 30s
+    rules:
+      # -----------------------------------------------------------------------
+      # Registration drop rate exceeds 5%
+      # -----------------------------------------------------------------------
+      - alert: RegistrationDropRate
+        expr: |
+          (
+            rate(voip_registrations_failed_total[5m])
+            / (rate(voip_registrations_total[5m]) + 1e-10)
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          component: sip
+        annotations:
+          summary: "SIP registration drop rate exceeds 5%"
+          description: >
+            Registration failure rate is {{ $value | humanizePercentage }}
+            over the last 5 minutes. Check network connectivity and
+            authentication configuration.
+
+      # -----------------------------------------------------------------------
+      # Call failure rate exceeds 1% for 5 minutes
+      # -----------------------------------------------------------------------
+      - alert: CallFailureRate
+        expr: |
+          (
+            rate(voip_calls_failed_total[5m])
+            / (rate(voip_calls_total[5m]) + 1e-10)
+          ) > 0.01
+        for: 5m
+        labels:
+          severity: critical
+          component: sip
+        annotations:
+          summary: "Call failure rate exceeds 1%"
+          description: >
+            Call failure rate is {{ $value | humanizePercentage }}
+            over the last 5 minutes. Investigate SIP error responses
+            and RTP media path issues.
+
+      # -----------------------------------------------------------------------
+      # Packet loss exceeds 3%
+      # -----------------------------------------------------------------------
+      - alert: PacketLossHigh
+        expr: |
+          (
+            rate(voip_rtp_packets_lost_total[5m])
+            / (rate(voip_rtp_packets_total[5m]) + 1e-10)
+          ) > 0.03
+        for: 5m
+        labels:
+          severity: warning
+          component: rtp
+        annotations:
+          summary: "RTP packet loss exceeds 3%"
+          description: >
+            Packet loss rate is {{ $value | humanizePercentage }}.
+            This will cause audible degradation. Check network
+            quality and jitter buffer settings.
+
+      # -----------------------------------------------------------------------
+      # CPU usage exceeds 80% for 5 minutes
+      # -----------------------------------------------------------------------
+      - alert: HighCPUUsage
+        expr: |
+          (
+            rate(process_cpu_seconds_total{job="voip-engine"}[5m])
+          ) > 0.80
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "VoIP engine CPU usage exceeds 80%"
+          description: >
+            CPU usage is {{ $value | humanizePercentage }}
+            for the last 5 minutes. Consider scaling up or
+            investigating resource-intensive operations.
+
+      # -----------------------------------------------------------------------
+      # Memory usage exceeds 90%
+      # -----------------------------------------------------------------------
+      - alert: HighMemoryUsage
+        expr: |
+          (
+            process_resident_memory_bytes{job="voip-engine"}
+            / on() group_left() machine_memory_bytes
+          ) > 0.90
+        for: 5m
+        labels:
+          severity: critical
+          component: system
+        annotations:
+          summary: "VoIP engine memory usage exceeds 90%"
+          description: >
+            Memory usage is {{ $value | humanizePercentage }}.
+            Risk of OOM kill. Investigate memory leaks or
+            increase memory limits.
+
+      # -----------------------------------------------------------------------
+      # TLS certificate expires in less than 14 days
+      # -----------------------------------------------------------------------
+      - alert: CertificateExpiringSoon
+        expr: |
+          voip_tls_certificate_expiry_seconds < (14 * 24 * 3600)
+        for: 1h
+        labels:
+          severity: warning
+          component: tls
+        annotations:
+          summary: "TLS certificate expires in less than 14 days"
+          description: >
+            TLS certificate expires in {{ $value | humanizeDuration }}.
+            Renew the certificate before it expires to avoid
+            service disruption.
+
+      # -----------------------------------------------------------------------
+      # Engine is down for 1 minute
+      # -----------------------------------------------------------------------
+      - alert: VoIPEngineDown
+        expr: up{job="voip-engine"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: engine
+        annotations:
+          summary: "VoIP engine is down"
+          description: >
+            The voip-engine instance {{ $labels.instance }} has been
+            unreachable for more than 1 minute. Check container
+            health and logs immediately.
+
+      # -----------------------------------------------------------------------
+      # TURN allocation failures exceed 10 in 5 minutes
+      # -----------------------------------------------------------------------
+      - alert: TURNAllocationFailures
+        expr: |
+          increase(voip_turn_allocation_failures_total[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: turn
+        annotations:
+          summary: "TURN allocation failures exceed 10 in 5 minutes"
+          description: >
+            {{ $value }} TURN allocation failures in the last 5 minutes.
+            Check TURN server configuration, port availability,
+            and resource limits.

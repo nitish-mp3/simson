@@ -1,0 +1,380 @@
+syntax = "proto3";
+
+package voip;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+
+// =====================================================================
+// Top-level VoIP Engine gRPC service
+// =====================================================================
+
+service VoipEngine {
+  // Extension management
+  rpc CreateExtension(CreateExtensionRequest) returns (Extension);
+  rpc DeleteExtension(DeleteExtensionRequest) returns (google.protobuf.Empty);
+  rpc ListExtensions(ListExtensionsRequest)   returns (ListExtensionsResponse);
+
+  // Call control
+  rpc OriginateCall(OriginateCallRequest) returns (CallInfo);
+  rpc HangupCall(HangupCallRequest)       returns (google.protobuf.Empty);
+  rpc TransferCall(TransferCallRequest)   returns (CallInfo);
+  rpc MuteUnmute(MuteUnmuteRequest)       returns (google.protobuf.Empty);
+
+  // Call queries
+  rpc GetCallHistory(GetCallHistoryRequest) returns (GetCallHistoryResponse);
+  rpc GetActiveCalls(google.protobuf.Empty) returns (GetActiveCallsResponse);
+
+  // Routing
+  rpc SetRoutingRule(SetRoutingRuleRequest) returns (RoutingRule);
+
+  // Observability
+  rpc GetMetrics(google.protobuf.Empty) returns (MetricsResponse);
+  rpc GetHealth(google.protobuf.Empty)  returns (HealthResponse);
+
+  // Voicemail
+  rpc CreateVoicemail(CreateVoicemailRequest) returns (Voicemail);
+  rpc GetVoicemails(GetVoicemailsRequest)     returns (GetVoicemailsResponse);
+
+  // Real-time event stream (server-side streaming)
+  rpc StreamEvents(StreamEventsRequest) returns (stream VoipEvent);
+
+  // WebRTC signaling relay
+  rpc RelaySdp(RelaySdpRequest)                 returns (RelaySdpResponse);
+  rpc RelayIceCandidate(RelayIceCandidateRequest) returns (google.protobuf.Empty);
+}
+
+// =====================================================================
+// Enumerations
+// =====================================================================
+
+enum CallState {
+  CALL_STATE_UNKNOWN    = 0;
+  CALL_STATE_TRYING     = 1;
+  CALL_STATE_RINGING    = 2;
+  CALL_STATE_EARLY      = 3;
+  CALL_STATE_CONFIRMED  = 4;
+  CALL_STATE_TERMINATED = 5;
+}
+
+enum TransportType {
+  TRANSPORT_UNKNOWN = 0;
+  TRANSPORT_UDP     = 1;
+  TRANSPORT_TCP     = 2;
+  TRANSPORT_TLS     = 3;
+  TRANSPORT_WS      = 4;
+  TRANSPORT_WSS     = 5;
+}
+
+enum CodecType {
+  CODEC_UNKNOWN = 0;
+  CODEC_PCMU    = 1;   // G.711 mu-law
+  CODEC_PCMA    = 2;   // G.711 A-law
+  CODEC_G722    = 3;
+  CODEC_G729    = 4;
+  CODEC_OPUS    = 5;
+  CODEC_ILBC    = 6;
+  CODEC_VP8     = 7;
+  CODEC_VP9     = 8;
+  CODEC_H264    = 9;
+}
+
+enum DtmfMode {
+  DTMF_RFC2833 = 0;
+  DTMF_INBAND  = 1;
+  DTMF_INFO    = 2;
+}
+
+enum HangupCause {
+  HANGUP_NORMAL          = 0;
+  HANGUP_BUSY            = 1;
+  HANGUP_NO_ANSWER       = 2;
+  HANGUP_REJECTED        = 3;
+  HANGUP_NOT_FOUND       = 4;
+  HANGUP_NETWORK_ERROR   = 5;
+  HANGUP_SERVER_ERROR    = 6;
+  HANGUP_CALLER_CANCEL   = 7;
+}
+
+// =====================================================================
+// Extension messages
+// =====================================================================
+
+message CreateExtensionRequest {
+  string        number               = 1;
+  string        display_name         = 2;
+  string        password             = 3;
+  TransportType transport            = 4;
+  bool          voicemail_enabled    = 5;
+  int32         max_concurrent_calls = 6;
+  repeated CodecType allowed_codecs  = 7;
+}
+
+message DeleteExtensionRequest {
+  string extension_id = 1;
+}
+
+message ListExtensionsRequest {
+  int32  page_size  = 1;
+  string page_token = 2;
+}
+
+message ListExtensionsResponse {
+  repeated Extension extensions   = 1;
+  string             next_page_token = 2;
+}
+
+message Extension {
+  string        id                   = 1;
+  string        number               = 2;
+  string        display_name         = 3;
+  TransportType transport            = 4;
+  bool          voicemail_enabled    = 5;
+  bool          registered           = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+  int32         max_concurrent_calls = 9;
+  repeated CodecType allowed_codecs  = 10;
+  string        contact_uri          = 11;
+  string        user_agent           = 12;
+}
+
+// =====================================================================
+// Call control messages
+// =====================================================================
+
+message OriginateCallRequest {
+  string from_extension = 1;
+  string to_extension   = 2;
+  bool   auto_answer    = 3;
+  bool   record         = 4;
+  CodecType preferred_codec = 5;
+  map<string, string> headers = 6;
+}
+
+message HangupCallRequest {
+  string      call_id = 1;
+  HangupCause cause   = 2;
+}
+
+message TransferCallRequest {
+  string call_id        = 1;
+  string to_extension   = 2;
+  bool   blind_transfer = 3;
+}
+
+message MuteUnmuteRequest {
+  string call_id   = 1;
+  bool   mute      = 2;
+  string direction = 3;  // "send" | "recv" | "both"
+}
+
+// =====================================================================
+// Call info and queries
+// =====================================================================
+
+message CallQuality {
+  float jitter_ms       = 1;
+  float packet_loss_pct = 2;
+  float rtt_ms          = 3;
+  int32 mos_score       = 4;  // x10, e.g. 42 = MOS 4.2
+}
+
+message CallInfo {
+  string    call_id      = 1;
+  string    from_uri     = 2;
+  string    to_uri       = 3;
+  CallState state        = 4;
+  google.protobuf.Timestamp started_at  = 5;
+  google.protobuf.Timestamp answered_at = 6;
+  bool      is_recording = 7;
+  bool      is_muted     = 8;
+  string    codec        = 9;
+  CallQuality quality    = 10;
+  int32     duration_sec = 11;
+  TransportType transport = 12;
+}
+
+message GetCallHistoryRequest {
+  string extension_id = 1;
+  google.protobuf.Timestamp since = 2;
+  google.protobuf.Timestamp until = 3;
+  int32  page_size    = 4;
+  string page_token   = 5;
+}
+
+message GetCallHistoryResponse {
+  repeated CallInfo calls          = 1;
+  string            next_page_token = 2;
+}
+
+message GetActiveCallsResponse {
+  repeated CallInfo calls = 1;
+}
+
+// =====================================================================
+// Routing
+// =====================================================================
+
+message SetRoutingRuleRequest {
+  string pattern     = 1;  // regex or prefix match
+  string destination = 2;
+  int32  priority    = 3;
+  string description = 4;
+  bool   enabled     = 5;
+  string time_condition = 6;  // cron-like expression
+}
+
+message RoutingRule {
+  string id          = 1;
+  string pattern     = 2;
+  string destination = 3;
+  int32  priority    = 4;
+  string description = 5;
+  google.protobuf.Timestamp created_at = 6;
+  bool   enabled     = 7;
+  string time_condition = 8;
+}
+
+// =====================================================================
+// Observability
+// =====================================================================
+
+message MetricsResponse {
+  int32  active_calls          = 1;
+  int32  active_registrations  = 2;
+  int32  active_turn_allocs    = 3;
+  int64  total_calls           = 4;
+  int64  call_drops            = 5;
+  double avg_call_duration_sec = 6;
+  double avg_jitter_ms         = 7;
+  double avg_packet_loss_pct   = 8;
+  double cpu_usage_pct         = 9;
+  int64  memory_usage_bytes    = 10;
+}
+
+message ComponentHealth {
+  bool   healthy = 1;
+  string message = 2;
+}
+
+message HealthResponse {
+  bool   healthy    = 1;
+  string version    = 2;
+  int64  uptime_sec = 3;
+  map<string, ComponentHealth> components = 4;
+}
+
+// =====================================================================
+// Voicemail
+// =====================================================================
+
+message CreateVoicemailRequest {
+  string extension_id = 1;
+  string caller_id    = 2;
+  bytes  audio_data   = 3;
+  int32  duration_sec = 4;
+}
+
+message Voicemail {
+  string id           = 1;
+  string extension_id = 2;
+  string caller_id    = 3;
+  int32  duration_sec = 4;
+  bool   is_read      = 5;
+  string file_path    = 6;
+  google.protobuf.Timestamp created_at = 7;
+}
+
+message GetVoicemailsRequest {
+  string extension_id = 1;
+  bool   unread_only  = 2;
+  int32  page_size    = 3;
+  string page_token   = 4;
+}
+
+message GetVoicemailsResponse {
+  repeated Voicemail voicemails     = 1;
+  string             next_page_token = 2;
+}
+
+// =====================================================================
+// Events (server-side streaming)
+// =====================================================================
+
+message StreamEventsRequest {
+  repeated string event_types    = 1;  // filter by type, empty = all
+  string          extension_filter = 2;  // filter by extension id
+}
+
+message VoipEvent {
+  string event_id   = 1;
+  string event_type = 2;
+  google.protobuf.Timestamp timestamp = 3;
+  oneof payload {
+    CallEvent         call_event      = 10;
+    RegistrationEvent reg_event       = 11;
+    QualityEvent      quality_event   = 12;
+    VoicemailEvent    voicemail_event = 13;
+    SystemEvent       system_event    = 14;
+  }
+}
+
+message CallEvent {
+  string    call_id  = 1;
+  string    from_uri = 2;
+  string    to_uri   = 3;
+  CallState state    = 4;
+  int32     sip_code = 5;
+  string    reason   = 6;
+}
+
+message RegistrationEvent {
+  string extension_id = 1;
+  bool   registered   = 2;
+  string contact_uri  = 3;
+  string user_agent   = 4;
+}
+
+message QualityEvent {
+  string      call_id = 1;
+  CallQuality quality = 2;
+}
+
+message VoicemailEvent {
+  string voicemail_id = 1;
+  string extension_id = 2;
+  string action       = 3;  // "new" | "read" | "deleted"
+}
+
+message SystemEvent {
+  string component = 1;
+  string severity  = 2;  // "info" | "warning" | "error" | "critical"
+  string message   = 3;
+}
+
+// =====================================================================
+// WebRTC signaling relay
+// =====================================================================
+
+message RelaySdpRequest {
+  string call_id  = 1;
+  string from_id  = 2;
+  string to_id    = 3;
+  string sdp_type = 4;  // "offer" | "answer"
+  string sdp      = 5;
+}
+
+message RelaySdpResponse {
+  string sdp_type = 1;
+  string sdp      = 2;
+}
+
+message RelayIceCandidateRequest {
+  string call_id        = 1;
+  string from_id        = 2;
+  string to_id          = 3;
+  string candidate      = 4;
+  string sdp_mid        = 5;
+  int32  sdp_mline_index = 6;
+}

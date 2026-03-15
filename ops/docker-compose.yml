@@ -1,0 +1,210 @@
+# =============================================================================
+# docker-compose.yml - Full HA-VoIP Stack
+# Production-grade compose file with all services, monitoring, and persistence.
+#
+# Usage:
+#   docker compose -f ops/docker-compose.yml up -d
+#   docker compose -f ops/docker-compose.yml down
+# =============================================================================
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  # ---------------------------------------------------------------------------
+  # VoIP Engine - SIP / RTP / TURN server (Rust)
+  # ---------------------------------------------------------------------------
+  voip-engine:
+    build:
+      context: ..
+      dockerfile: ops/docker/Dockerfile.engine
+    image: ha-voip/voip-engine:latest
+    container_name: voip-engine
+    restart: unless-stopped
+    ports:
+      - "5060:5060/udp"       # SIP UDP
+      - "5061:5061/tcp"       # SIP TLS
+      - "8443:8443/tcp"       # HTTPS / WebSocket
+      - "3478:3478/udp"       # TURN UDP
+      - "5349:5349/tcp"       # TURN TLS
+      - "50051:50051/tcp"     # gRPC API
+      - "9090:9090/tcp"       # Metrics / health
+      - "10000-10100:10000-10100/udp"  # RTP media (narrowed range for compose)
+    environment:
+      VOIP_ENGINE_LOG_LEVEL: "${LOG_LEVEL:-info}"
+      VOIP_ENGINE_SIP_REALM: "${SIP_REALM:-home.local}"
+      VOIP_ENGINE_TURN_REALM: "${TURN_REALM:-home.local}"
+      VOIP_ENGINE_EXTERNAL_IP: "${EXTERNAL_IP:-127.0.0.1}"
+      VOIP_ENGINE_TLS_CERT: "/data/voip/certs/server.crt"
+      VOIP_ENGINE_TLS_KEY: "/data/voip/certs/server.key"
+      VOIP_ENGINE_DB_URL: "postgres://havoip:${POSTGRES_PASSWORD:-changeme}@postgres:5432/havoip"
+      VOIP_ENGINE_METRICS_ADDR: "0.0.0.0:9090"
+      VOIP_ENGINE_GRPC_ADDR: "0.0.0.0:50051"
+      VOIP_ENGINE_RTP_PORT_MIN: "10000"
+      VOIP_ENGINE_RTP_PORT_MAX: "10100"
+      VOIP_ENGINE_RECORDING_PATH: "/data/voip/recordings"
+    volumes:
+      - voip-data:/data/voip
+      - voip-recordings:/data/voip/recordings
+      - voip-certs:/data/voip/certs:ro
+    networks:
+      - ha-voip-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 1024M
+        reservations:
+          cpus: "0.5"
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9090/health/live"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL - persistent call history, voicemail, config (optional)
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: ha-voip-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: havoip
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-changeme}"
+      POSTGRES_DB: havoip
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../migrations:/docker-entrypoint-initdb.d:ro
+    networks:
+      - ha-voip-net
+    ports:
+      - "5432:5432/tcp"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+        reservations:
+          cpus: "0.25"
+          memory: 128M
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U havoip -d havoip"]
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # Prometheus - metrics collection (optional)
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: ha-voip-prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=30d"
+      - "--storage.tsdb.retention.size=5GB"
+      - "--web.enable-lifecycle"
+      - "--web.enable-admin-api"
+    volumes:
+      - ../monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../monitoring/prometheus/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
+      - prometheus-data:/prometheus
+    networks:
+      - ha-voip-net
+    ports:
+      - "9091:9090/tcp"
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1024M
+        reservations:
+          cpus: "0.25"
+          memory: 256M
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging: *default-logging
+
+  # ---------------------------------------------------------------------------
+  # Grafana - dashboards and alerting UI (optional)
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: ha-voip-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: "${GRAFANA_USER:-admin}"
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_PASSWORD:-admin}"
+      GF_INSTALL_PLUGINS: ""
+      GF_SERVER_ROOT_URL: "${GRAFANA_ROOT_URL:-http://localhost:3000}"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ../monitoring/grafana/datasource.json:/etc/grafana/provisioning/datasources/datasource.json:ro
+      - ../monitoring/grafana/dashboard.json:/var/lib/grafana/dashboards/ha-voip.json:ro
+    networks:
+      - ha-voip-net
+    ports:
+      - "3000:3000/tcp"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+        reservations:
+          cpus: "0.1"
+          memory: 64M
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging: *default-logging
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  ha-voip-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  voip-data:
+    driver: local
+  voip-recordings:
+    driver: local
+  voip-certs:
+    driver: local
+  pgdata:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local

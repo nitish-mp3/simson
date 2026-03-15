@@ -1,0 +1,159 @@
+# HA VoIP <-> Asterisk SIP Trunk Configuration
+# ==============================================
+#
+# This file configures a SIP trunk between HA VoIP and an Asterisk PBX,
+# enabling:
+#   - Internal HA VoIP extensions to call Asterisk extensions
+#   - Asterisk extensions to call HA VoIP extensions
+#   - PSTN calls to be routed through Asterisk's SIP provider trunk
+#
+# Prerequisites:
+#   - Asterisk 18+ with PJSIP
+#   - HA VoIP engine running and reachable from the Asterisk host
+#   - Network connectivity between both hosts
+
+# ---------------------------------------------------------------------------
+# Asterisk PJSIP Configuration
+# ---------------------------------------------------------------------------
+# Add the following to /etc/asterisk/pjsip.conf on the Asterisk server.
+
+# -- Transport ---------------------------------------------------------------
+
+# [transport-udp]
+# type = transport
+# protocol = udp
+# bind = 0.0.0.0:5060
+
+# -- HA VoIP Trunk Endpoint --------------------------------------------------
+
+# [ha-voip]
+# type = endpoint
+# context = from-ha-voip
+# disallow = all
+# allow = opus
+# allow = alaw
+# allow = ulaw
+# direct_media = no
+# ice_support = no
+# force_rport = yes
+# rewrite_contact = yes
+# rtp_symmetric = yes
+# outbound_auth = ha-voip-auth
+# aors = ha-voip-aor
+# dtmf_mode = rfc4733
+
+# [ha-voip-auth]
+# type = auth
+# auth_type = userpass
+# username = asterisk-trunk
+# password = change-this-to-a-strong-password
+
+# [ha-voip-aor]
+# type = aor
+# contact = sip:192.168.1.50:5060     ; <-- HA VoIP engine IP and SIP port
+# qualify_frequency = 30
+# qualify_timeout = 5
+
+# [ha-voip-identify]
+# type = identify
+# endpoint = ha-voip
+# match = 192.168.1.50                ; <-- HA VoIP engine IP
+
+# -- Asterisk Dialplan -------------------------------------------------------
+# Add to /etc/asterisk/extensions.conf
+
+# [from-ha-voip]
+# ; Calls arriving from HA VoIP destined for Asterisk extensions
+# exten => _X.,1,NoOp(Incoming from HA VoIP: ${EXTEN})
+#  same => n,Dial(PJSIP/${EXTEN},30)
+#  same => n,Voicemail(${EXTEN}@default,u)
+#  same => n,Hangup()
+#
+# [to-ha-voip]
+# ; Route HA VoIP extension range (1XX) from Asterisk to HA VoIP
+# exten => _1XX,1,NoOp(Routing to HA VoIP: ${EXTEN})
+#  same => n,Dial(PJSIP/${EXTEN}@ha-voip,30)
+#  same => n,Hangup()
+#
+# [to-pstn-via-asterisk]
+# ; Route external numbers from Asterisk to the PSTN SIP provider
+# exten => _[2-9]XXXXXXXXX,1,NoOp(PSTN call: ${EXTEN})
+#  same => n,Set(CALLERID(num)=5551000000)
+#  same => n,Dial(PJSIP/${EXTEN}@pstn-provider,60)
+#  same => n,Hangup()
+
+# ---------------------------------------------------------------------------
+# HA VoIP Engine Configuration
+# ---------------------------------------------------------------------------
+# Add the following routing rules to the HA VoIP engine to send traffic
+# to Asterisk.
+
+# Option A: Via engine config.yaml
+#
+# routing_rules:
+#   # Route 10-digit North American numbers to Asterisk for PSTN
+#   - pattern: "^[2-9][0-9]{9}$"
+#     destination: "sip:192.168.1.100:5060"   # Asterisk IP
+#     priority: 10
+#     description: "PSTN via Asterisk"
+#
+#   # Route Asterisk extension range (2XX-8XX) to Asterisk
+#   - pattern: "^[2-8][0-9]{2}$"
+#     destination: "sip:192.168.1.100:5060"
+#     priority: 20
+#     description: "Asterisk extensions"
+
+# Option B: Via gRPC at runtime
+#
+# grpcurl -plaintext -d '{
+#   "pattern": "^[2-9][0-9]{9}$",
+#   "destination": "sip:192.168.1.100:5060",
+#   "priority": 10,
+#   "description": "PSTN via Asterisk"
+# }' localhost:50051 voip.VoipService/SetRoutingRule
+#
+# grpcurl -plaintext -d '{
+#   "pattern": "^[2-8][0-9]{2}$",
+#   "destination": "sip:192.168.1.100:5060",
+#   "priority": 20,
+#   "description": "Asterisk extensions"
+# }' localhost:50051 voip.VoipService/SetRoutingRule
+
+# ---------------------------------------------------------------------------
+# Testing
+# ---------------------------------------------------------------------------
+#
+# 1. From an HA VoIP extension (e.g. 100), dial an Asterisk extension
+#    (e.g. 200).  Verify two-way audio.
+#
+# 2. From an Asterisk extension (e.g. 200), dial an HA VoIP extension
+#    (e.g. 100).  Verify ringing and two-way audio.
+#
+# 3. From an HA VoIP extension, dial an external number (e.g. 2125551234).
+#    Verify the call routes through Asterisk to the PSTN.
+#
+# 4. Call an inbound DID number.  Verify it arrives at the correct HA VoIP
+#    extension via the routing rules.
+
+# ---------------------------------------------------------------------------
+# Codec Negotiation
+# ---------------------------------------------------------------------------
+#
+# Both sides should agree on codecs.  Recommended priority:
+#   1. Opus (48 kHz, wideband, low bitrate)
+#   2. G.711 A-law (pcma, 8 kHz, 64 kbps)
+#   3. G.711 mu-law (pcmu, 8 kHz, 64 kbps)
+#
+# Asterisk must have the Opus codec module installed:
+#   apt install asterisk-opus   # Debian/Ubuntu
+#   yum install asterisk-opus   # CentOS/RHEL
+
+# ---------------------------------------------------------------------------
+# Security Notes
+# ---------------------------------------------------------------------------
+#
+# - Use TLS for the SIP trunk in production (change protocol to tcp/tls
+#   and configure certificates on both sides).
+# - Change the trunk password from the example to a strong random value.
+# - Restrict Asterisk's firewall to allow SIP only from the HA VoIP host.
+# - Enable SRTP on both sides for encrypted media.

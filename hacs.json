@@ -1,0 +1,8 @@
+{
+  "name": "HA VoIP",
+  "render_readme": true,
+  "homeassistant": "2024.1.0",
+  "domains": [
+    "ha_voip"
+  ]
+}

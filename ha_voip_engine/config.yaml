@@ -1,0 +1,25 @@
+name: HA VoIP Engine
+version: "1.0.0"
+slug: ha_voip_engine
+description: Embedded VoIP engine for the HA VoIP integration
+url: https://github.com/ha-voip/ha-voip
+startup: services
+boot: auto
+init: false
+host_network: true
+arch:
+  - aarch64
+  - amd64
+  - armv7
+  - i386
+  - armhf
+options:
+  log_level: info
+schema:
+  log_level: list(trace|debug|info|warn|error)
+build_from:
+  aarch64: ghcr.io/ha-voip/voip-engine:latest
+  amd64: ghcr.io/ha-voip/voip-engine:latest
+  armv7: ghcr.io/ha-voip/voip-engine:latest
+  i386: ghcr.io/ha-voip/voip-engine:latest
+  armhf: ghcr.io/ha-voip/voip-engine:latest

@@ -1,0 +1,211 @@
+# =============================================================================
+# values.yaml
+# Helm-style values file with all configurable parameters for HA-VoIP.
+#
+# NOTE: This file is structured as a standard Helm values.yaml. The sibling
+# manifests in ops/k8s/ can be converted to Helm templates by replacing
+# hard-coded values with {{ .Values.<path> }} references.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Global settings
+# ---------------------------------------------------------------------------
+global:
+  namespace: ha-voip
+  imagePullPolicy: IfNotPresent
+  # imagePullSecrets:
+  #   - name: registry-credentials
+
+# ---------------------------------------------------------------------------
+# VoIP Engine
+# ---------------------------------------------------------------------------
+engine:
+  image:
+    repository: ha-voip/voip-engine
+    tag: latest
+  replicas: 2
+
+  # Resource requests and limits
+  resources:
+    requests:
+      cpu: 500m
+      memory: 256Mi
+    limits:
+      cpu: "2000m"
+      memory: 1Gi
+
+  # SIP configuration
+  sip:
+    realm: home.local
+    udpPort: 5060
+    tlsPort: 5061
+
+  # TURN configuration
+  turn:
+    realm: home.local
+    udpPort: 3478
+    tlsPort: 5349
+    maxAllocations: 500
+
+  # RTP configuration
+  rtp:
+    portMin: 10000
+    portMax: 20000
+    jitterBufferMs: 60
+
+  # gRPC configuration
+  grpc:
+    port: 50051
+
+  # Metrics / health endpoint
+  metrics:
+    port: 9090
+
+  # HTTPS / WebSocket
+  health:
+    port: 8443
+
+  # TLS certificate (reference to a K8s TLS Secret)
+  tls:
+    enabled: true
+    secretName: voip-engine-tls
+    certPath: /etc/voip-engine/certs/tls.crt
+    keyPath: /etc/voip-engine/certs/tls.key
+
+  # Database configuration
+  database:
+    secretName: voip-engine-secrets
+    secretKey: DATABASE_URL
+    maxConnections: 20
+    idleTimeoutSecs: 300
+
+  # Service type for external-facing SIP/TURN
+  service:
+    type: NodePort
+    externalTrafficPolicy: Local
+    annotations: {}
+
+  # Probes
+  livenessProbe:
+    path: /health/live
+    initialDelaySeconds: 10
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    path: /health/ready
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 2
+
+  # Recordings PVC
+  recordings:
+    storageClass: standard
+    size: 50Gi
+    accessMode: ReadWriteOnce
+
+  # Log level
+  logLevel: info
+
+# ---------------------------------------------------------------------------
+# HA Integration (Python)
+# ---------------------------------------------------------------------------
+integration:
+  image:
+    repository: ha-voip/ha-integration
+    tag: latest
+  replicas: 1
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+  service:
+    type: ClusterIP
+    port: 8123
+
+  logLevel: INFO
+
+# ---------------------------------------------------------------------------
+# PostgreSQL (sub-chart or external)
+# ---------------------------------------------------------------------------
+postgresql:
+  enabled: true
+  image:
+    repository: postgres
+    tag: "16-alpine"
+  auth:
+    username: havoip
+    database: havoip
+    existingSecret: voip-engine-secrets
+    secretKeys:
+      adminPasswordKey: POSTGRES_PASSWORD
+  primary:
+    persistence:
+      storageClass: standard
+      size: 20Gi
+    resources:
+      requests:
+        cpu: 250m
+        memory: 256Mi
+      limits:
+        cpu: "1"
+        memory: 512Mi
+
+# ---------------------------------------------------------------------------
+# Horizontal Pod Autoscaler
+# ---------------------------------------------------------------------------
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+
+# ---------------------------------------------------------------------------
+# Pod Disruption Budget
+# ---------------------------------------------------------------------------
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# ---------------------------------------------------------------------------
+# NetworkPolicy
+# ---------------------------------------------------------------------------
+networkPolicy:
+  enabled: true
+  # Allow ingress from any source to SIP/TURN ports
+  allowExternalSIP: true
+  # Allow ingress only from Prometheus namespace to metrics port
+  metricsNamespace: monitoring
+
+# ---------------------------------------------------------------------------
+# Monitoring
+# ---------------------------------------------------------------------------
+monitoring:
+  prometheus:
+    enabled: true
+    scrapeInterval: 15s
+  grafana:
+    enabled: true
+    adminUser: admin
+    adminPassword: admin
+    dashboardConfigMap: ha-voip-grafana-dashboard
+
+# ---------------------------------------------------------------------------
+# Ingress (for HTTPS API / WebSocket)
+# ---------------------------------------------------------------------------
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts:
+    - host: voip.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []

@@ -1,0 +1,212 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "VoIP Engine Mode",
+        "description": "Choose how the VoIP engine runs. **Local** starts the bundled engine binary on this machine. **Remote** connects to an engine running elsewhere.",
+        "data": {
+          "engine_mode": "Engine mode"
+        }
+      },
+      "network": {
+        "title": "Network Configuration",
+        "description": "Configure network ports and NAT traversal. Ports have been auto-detected where possible.",
+        "data": {
+          "engine_host": "Engine host",
+          "engine_port": "Engine port",
+          "grpc_port": "gRPC port",
+          "sip_port": "SIP port (UDP/TCP)",
+          "ws_port": "WebSocket port",
+          "rtp_port_start": "RTP port range start",
+          "rtp_port_end": "RTP port range end",
+          "external_host": "External host / public IP",
+          "stun_server": "STUN server",
+          "turn_server": "TURN server (optional)",
+          "turn_username": "TURN username",
+          "turn_password": "TURN password"
+        }
+      },
+      "certificates": {
+        "title": "TLS Certificate",
+        "description": "WebRTC requires a secure context. Choose how TLS certificates are managed.",
+        "data": {
+          "cert_mode": "Certificate mode",
+          "cert_path": "Certificate file path",
+          "key_path": "Private key file path",
+          "acme_domain": "ACME domain",
+          "acme_email": "ACME email"
+        }
+      },
+      "extensions": {
+        "title": "SIP Extensions",
+        "description": "Define initial SIP extensions. Enter one per line in the format:\n`number, display name, password`\n\nExample:\n{extension_format}",
+        "data": {
+          "extensions": "Extensions (one per line)"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate",
+        "description": "The connection to the VoIP engine was lost. Please verify the engine host and port.",
+        "data": {
+          "engine_host": "Engine host",
+          "grpc_port": "gRPC port"
+        }
+      }
+    },
+    "error": {
+      "port_out_of_range": "Port must be between 1024 and 65535.",
+      "rtp_range_invalid": "RTP end port must be greater than start port.",
+      "engine_unreachable": "Cannot connect to the VoIP engine at the specified address.",
+      "cert_path_required": "Certificate file path is required for manual mode.",
+      "key_path_required": "Private key file path is required for manual mode.",
+      "acme_domain_required": "Domain is required for ACME certificate mode.",
+      "acme_email_required": "Email is required for ACME certificate mode.",
+      "extension_format_invalid": "Invalid extension format. Use: number, name, password",
+      "no_extensions": "At least one extension must be configured.",
+      "unsupported_codec": "The selected codec is not supported.",
+      "recording_path_required": "A recording path is required when recording is enabled."
+    },
+    "abort": {
+      "already_configured": "HA VoIP is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "HA VoIP Options",
+        "description": "Adjust runtime settings for the VoIP integration.",
+        "data": {
+          "default_codec": "Default audio codec",
+          "enable_recording": "Enable call recording",
+          "recording_path": "Recording storage path",
+          "log_level": "Engine log level",
+          "stun_server": "STUN server",
+          "turn_server": "TURN server",
+          "turn_username": "TURN username",
+          "turn_password": "TURN password",
+          "engine_binary_path": "Engine binary path (override)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "call_state": {
+        "name": "Call State",
+        "state": {
+          "idle": "Idle",
+          "ringing": "Ringing",
+          "in_call": "In Call",
+          "on_hold": "On Hold",
+          "transferring": "Transferring"
+        }
+      },
+      "call_history": {
+        "name": "Call History"
+      }
+    },
+    "binary_sensor": {
+      "presence": {
+        "name": "Presence",
+        "state": {
+          "on": "Online",
+          "off": "Offline"
+        }
+      }
+    }
+  },
+  "services": {
+    "make_call": {
+      "name": "Make Call",
+      "description": "Initiate an outbound call from a VoIP extension.",
+      "fields": {
+        "target": {
+          "name": "Target",
+          "description": "The phone number or SIP URI to call."
+        },
+        "from_extension": {
+          "name": "From Extension",
+          "description": "The extension number to call from."
+        },
+        "caller_id": {
+          "name": "Caller ID",
+          "description": "Override the outgoing caller ID."
+        },
+        "codec": {
+          "name": "Codec",
+          "description": "Preferred audio codec for this call."
+        },
+        "auto_answer": {
+          "name": "Auto Answer",
+          "description": "Automatically answer the call on the target device."
+        },
+        "record": {
+          "name": "Record",
+          "description": "Start recording the call immediately."
+        }
+      }
+    },
+    "hangup": {
+      "name": "Hang Up",
+      "description": "End an active call.",
+      "fields": {
+        "call_id": {
+          "name": "Call ID",
+          "description": "The unique identifier of the call to hang up."
+        }
+      }
+    },
+    "transfer": {
+      "name": "Transfer Call",
+      "description": "Transfer an active call to another target.",
+      "fields": {
+        "call_id": {
+          "name": "Call ID",
+          "description": "The unique identifier of the call to transfer."
+        },
+        "target": {
+          "name": "Transfer Target",
+          "description": "The extension or number to transfer the call to."
+        },
+        "blind": {
+          "name": "Blind Transfer",
+          "description": "Perform a blind (unattended) transfer."
+        }
+      }
+    },
+    "record_toggle": {
+      "name": "Toggle Recording",
+      "description": "Start or stop recording an active call.",
+      "fields": {
+        "call_id": {
+          "name": "Call ID",
+          "description": "The unique identifier of the call."
+        }
+      }
+    },
+    "mute_toggle": {
+      "name": "Toggle Mute",
+      "description": "Mute or unmute the microphone on an active call.",
+      "fields": {
+        "call_id": {
+          "name": "Call ID",
+          "description": "The unique identifier of the call."
+        }
+      }
+    },
+    "send_dtmf": {
+      "name": "Send DTMF",
+      "description": "Send DTMF tones on an active call.",
+      "fields": {
+        "call_id": {
+          "name": "Call ID",
+          "description": "The unique identifier of the call."
+        },
+        "digits": {
+          "name": "Digits",
+          "description": "The DTMF digits to send (0-9, A-D, *, #)."
+        }
+      }
+    }
+  }
+}

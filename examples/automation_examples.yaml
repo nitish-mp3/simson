@@ -1,0 +1,257 @@
+# HA VoIP Automation Examples
+# ============================
+#
+# Home Assistant automations that use HA VoIP events and services.
+# Copy individual automations into your automations.yaml or create
+# them via the HA UI.
+
+# ---------------------------------------------------------------------------
+# 1. Auto-answer doorbell extension
+# ---------------------------------------------------------------------------
+# When the doorbell extension (102) receives a call, auto-answer and play
+# a greeting via TTS.
+
+- id: voip_doorbell_auto_answer
+  alias: "VoIP: Auto-answer doorbell"
+  description: "Auto-answer calls to the doorbell extension and play a greeting."
+  trigger:
+    - platform: event
+      event_type: ha_voip_call_ringing
+      event_data:
+        to_uri: "sip:102@homeassistant.local"
+  action:
+    - service: ha_voip.make_call
+      data:
+        from_extension: "102"
+        to_extension: "{{ trigger.event.data.from_uri | regex_findall('sip:([0-9]+)@') | first }}"
+        auto_answer: true
+    - delay:
+        seconds: 1
+    - service: tts.speak
+      data:
+        entity_id: tts.google_translate
+        message: "Hello, you have reached the front door. Please wait while we connect you."
+        media_player_entity_id: media_player.doorbell_speaker
+
+# ---------------------------------------------------------------------------
+# 2. Notify on missed call
+# ---------------------------------------------------------------------------
+# Send a mobile notification when a call goes unanswered.
+
+- id: voip_missed_call_notify
+  alias: "VoIP: Notify on missed call"
+  description: "Push notification when a call ends without being answered."
+  trigger:
+    - platform: event
+      event_type: ha_voip_call_ended
+  condition:
+    - condition: template
+      value_template: >
+        {{ trigger.event.data.hangup_cause in [480, 408, 487] }}
+  action:
+    - service: notify.mobile_app_phone
+      data:
+        title: "Missed VoIP Call"
+        message: >
+          Missed call from {{ trigger.event.data.from_uri }}
+          at {{ now().strftime('%H:%M') }}.
+        data:
+          tag: "voip-missed-{{ trigger.event.data.call_id }}"
+          actions:
+            - action: CALL_BACK
+              title: "Call Back"
+
+# ---------------------------------------------------------------------------
+# 3. Turn on office lights when on a call
+# ---------------------------------------------------------------------------
+# Turn on a "busy" light while a call is active on extension 100.
+
+- id: voip_busy_light_on
+  alias: "VoIP: Busy light ON"
+  description: "Turn on office busy light when extension 100 is in a call."
+  trigger:
+    - platform: event
+      event_type: ha_voip_call_answered
+      event_data:
+        from_uri: "sip:100@homeassistant.local"
+    - platform: event
+      event_type: ha_voip_call_answered
+      event_data:
+        to_uri: "sip:100@homeassistant.local"
+  action:
+    - service: light.turn_on
+      target:
+        entity_id: light.office_busy_indicator
+      data:
+        color_name: red
+        brightness: 255
+
+- id: voip_busy_light_off
+  alias: "VoIP: Busy light OFF"
+  description: "Turn off office busy light when the call ends."
+  trigger:
+    - platform: event
+      event_type: ha_voip_call_ended
+  condition:
+    - condition: template
+      value_template: >
+        {{ 'sip:100@homeassistant.local' in
+           (trigger.event.data.from_uri | default('')) +
+           (trigger.event.data.to_uri | default('')) }}
+  action:
+    - service: light.turn_off
+      target:
+        entity_id: light.office_busy_indicator
+
+# ---------------------------------------------------------------------------
+# 4. Intercom: broadcast to all extensions
+# ---------------------------------------------------------------------------
+# A button press triggers a broadcast call to a ring group.
+
+- id: voip_intercom_broadcast
+  alias: "VoIP: Intercom broadcast"
+  description: "Press a Zigbee button to broadcast an intercom message."
+  trigger:
+    - platform: state
+      entity_id: binary_sensor.intercom_button
+      to: "on"
+  action:
+    - service: ha_voip.make_call
+      data:
+        from_extension: "100"
+        to_extension: "101"
+        auto_answer: true
+    - service: ha_voip.make_call
+      data:
+        from_extension: "100"
+        to_extension: "102"
+        auto_answer: true
+
+# ---------------------------------------------------------------------------
+# 5. Log call history to a file
+# ---------------------------------------------------------------------------
+# Append CDR data to a CSV file whenever a call ends.
+
+- id: voip_log_cdr
+  alias: "VoIP: Log CDR"
+  description: "Write call detail records to a CSV log file."
+  trigger:
+    - platform: event
+      event_type: ha_voip_call_ended
+  action:
+    - service: notify.file_notify
+      data:
+        message: >
+          {{ now().isoformat() }},{{ trigger.event.data.call_id }},{{ trigger.event.data.from_uri }},{{ trigger.event.data.to_uri }},{{ trigger.event.data.duration_sec }},{{ trigger.event.data.hangup_cause }}
+
+# ---------------------------------------------------------------------------
+# 6. DND mode via input_boolean
+# ---------------------------------------------------------------------------
+# When DND is enabled, reject incoming calls to extension 100 and send
+# them to voicemail.
+
+- id: voip_dnd_reject
+  alias: "VoIP: DND reject calls"
+  description: "Reject incoming calls when Do Not Disturb is enabled."
+  trigger:
+    - platform: event
+      event_type: ha_voip_call_ringing
+      event_data:
+        to_uri: "sip:100@homeassistant.local"
+  condition:
+    - condition: state
+      entity_id: input_boolean.voip_dnd_100
+      state: "on"
+  action:
+    - service: ha_voip.hangup
+      data:
+        call_id: "{{ trigger.event.data.call_id }}"
+
+# ---------------------------------------------------------------------------
+# 7. Call forwarding based on presence
+# ---------------------------------------------------------------------------
+# If Alice (extension 100) is not home, forward calls to her mobile via
+# the Asterisk PSTN trunk.
+
+- id: voip_forward_away
+  alias: "VoIP: Forward when away"
+  description: "Forward calls to mobile when the user is not home."
+  trigger:
+    - platform: event
+      event_type: ha_voip_call_ringing
+      event_data:
+        to_uri: "sip:100@homeassistant.local"
+  condition:
+    - condition: state
+      entity_id: person.alice
+      state: "not_home"
+  action:
+    - delay:
+        seconds: 10
+    - service: ha_voip.transfer
+      data:
+        call_id: "{{ trigger.event.data.call_id }}"
+        target_extension: "5551234567"
+        blind: true
+
+# ---------------------------------------------------------------------------
+# 8. Announce incoming call on smart speaker
+# ---------------------------------------------------------------------------
+# When a call comes in, announce the caller on a Google Home or Alexa.
+
+- id: voip_announce_incoming
+  alias: "VoIP: Announce incoming call"
+  description: "Announce incoming calls on a smart speaker."
+  trigger:
+    - platform: event
+      event_type: ha_voip_call_ringing
+  action:
+    - service: tts.speak
+      data:
+        entity_id: tts.google_translate
+        message: >
+          Incoming call from
+          {{ trigger.event.data.caller_name | default(trigger.event.data.from_uri) }}.
+        media_player_entity_id: media_player.living_room_speaker
+
+# ---------------------------------------------------------------------------
+# 9. Monitor engine health
+# ---------------------------------------------------------------------------
+# Send an alert if the VoIP engine goes offline.
+
+- id: voip_engine_health
+  alias: "VoIP: Engine health monitor"
+  description: "Alert when the VoIP engine goes offline."
+  trigger:
+    - platform: event
+      event_type: ha_voip_engine_state_changed
+      event_data:
+        state: "error"
+  action:
+    - service: notify.mobile_app_phone
+      data:
+        title: "VoIP Engine Alert"
+        message: >
+          VoIP engine is in error state: {{ trigger.event.data.message }}.
+          Check the engine logs for details.
+        data:
+          priority: high
+          tag: voip-engine-alert
+
+# ---------------------------------------------------------------------------
+# 10. DTMF-controlled automation
+# ---------------------------------------------------------------------------
+# Press "1" during a call to toggle the garage door.
+
+- id: voip_dtmf_garage
+  alias: "VoIP: DTMF garage toggle"
+  description: "Toggle garage door when DTMF digit 1 is pressed during a call."
+  trigger:
+    - platform: event
+      event_type: ha_voip_dtmf_received
+      event_data:
+        digit: "1"
+  action:
+    - service: cover.toggle
+      target:
+        entity_id: cover.garage_door

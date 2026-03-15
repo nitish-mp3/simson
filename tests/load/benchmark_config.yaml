@@ -1,0 +1,29 @@
+# HA VoIP Load Test Configuration
+# ================================
+# Used by: python tests/load/load_test.py --config tests/load/benchmark_config.yaml
+
+# Engine connection
+host: "127.0.0.1"
+grpc_port: 50051
+sip_port: 5060
+
+# Concurrency levels to test (number of simultaneous users)
+user_counts:
+  - 50
+  - 100
+  - 250
+
+# Timeouts
+registration_timeout_sec: 5.0
+call_setup_timeout_sec: 10.0
+
+# How long each simulated call lasts (seconds)
+call_duration_sec: 2.0
+
+# Pause before and after each scenario to let the system settle
+warmup_sec: 1.0
+cooldown_sec: 1.0
+
+# Output file paths (relative to working directory)
+output_json: "results.json"
+output_md: "results.md"

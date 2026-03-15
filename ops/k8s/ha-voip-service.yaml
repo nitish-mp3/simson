@@ -1,0 +1,327 @@
+# =============================================================================
+# ha-voip-service.yaml
+# Kubernetes Services, ConfigMap, Secret, PVC, NetworkPolicy, HPA, and PDB
+# for the VoIP Engine.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# ClusterIP - gRPC API (internal, used by ha-integration pods)
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: voip-engine-grpc
+  namespace: ha-voip
+  labels:
+    app.kubernetes.io/name: voip-engine
+    app.kubernetes.io/component: grpc
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: voip-engine
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: grpc
+      protocol: TCP
+
+---
+# ---------------------------------------------------------------------------
+# NodePort - SIP signaling (external-facing for phone clients)
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: voip-engine-sip
+  namespace: ha-voip
+  labels:
+    app.kubernetes.io/name: voip-engine
+    app.kubernetes.io/component: sip
+spec:
+  type: NodePort
+  externalTrafficPolicy: Local
+  selector:
+    app.kubernetes.io/name: voip-engine
+  ports:
+    - name: sip-udp
+      port: 5060
+      targetPort: sip-udp
+      protocol: UDP
+      nodePort: 30060
+    - name: sip-tls
+      port: 5061
+      targetPort: sip-tls
+      protocol: TCP
+      nodePort: 30061
+
+---
+# ---------------------------------------------------------------------------
+# NodePort - TURN (external-facing for NAT traversal)
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: voip-engine-turn
+  namespace: ha-voip
+  labels:
+    app.kubernetes.io/name: voip-engine
+    app.kubernetes.io/component: turn
+spec:
+  type: NodePort
+  externalTrafficPolicy: Local
+  selector:
+    app.kubernetes.io/name: voip-engine
+  ports:
+    - name: turn-udp
+      port: 3478
+      targetPort: turn-udp
+      protocol: UDP
+      nodePort: 30478
+    - name: turn-tls
+      port: 5349
+      targetPort: turn-tls
+      protocol: TCP
+      nodePort: 30349
+
+---
+# ---------------------------------------------------------------------------
+# ClusterIP - Metrics (internal, scraped by Prometheus)
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Service
+metadata:
+  name: voip-engine-metrics
+  namespace: ha-voip
+  labels:
+    app.kubernetes.io/name: voip-engine
+    app.kubernetes.io/component: metrics
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9090"
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: voip-engine
+  ports:
+    - name: metrics
+      port: 9090
+      targetPort: metrics
+      protocol: TCP
+
+---
+# ---------------------------------------------------------------------------
+# ConfigMap - engine configuration YAML
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: voip-engine-config
+  namespace: ha-voip
+  labels:
+    app.kubernetes.io/name: voip-engine
+    app.kubernetes.io/component: config
+data:
+  config.yaml: |
+    server:
+      log_level: info
+      metrics_addr: "0.0.0.0:9090"
+      grpc_addr: "0.0.0.0:50051"
+      health_addr: "0.0.0.0:9090"
+
+    sip:
+      realm: home.local
+      udp_port: 5060
+      tls_port: 5061
+
+    rtp:
+      port_min: 10000
+      port_max: 20000
+      jitter_buffer_ms: 60
+
+    turn:
+      udp_port: 3478
+      tls_port: 5349
+      realm: home.local
+      max_allocations: 500
+
+    tls:
+      cert_path: /etc/voip-engine/certs/tls.crt
+      key_path: /etc/voip-engine/certs/tls.key
+
+    database:
+      max_connections: 20
+      idle_timeout_secs: 300
+
+    recording:
+      path: /var/lib/voip-engine/recordings
+      format: wav
+      max_duration_secs: 3600
+
+---
+# ---------------------------------------------------------------------------
+# Secret - API keys and credentials template
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: Secret
+metadata:
+  name: voip-engine-secrets
+  namespace: ha-voip
+  labels:
+    app.kubernetes.io/name: voip-engine
+    app.kubernetes.io/component: secrets
+type: Opaque
+data:
+  # echo -n 'postgres://havoip:changeme@postgres:5432/havoip' | base64
+  DATABASE_URL: cG9zdGdyZXM6Ly9oYXZvaXA6Y2hhbmdlbWVAcG9zdGdyZXM6NTQzMi9oYXZvaXA=
+  # echo -n 'changeme-turn-secret' | base64
+  TURN_AUTH_SECRET: Y2hhbmdlbWUtdHVybi1zZWNyZXQ=
+  # echo -n 'changeme-webhook-secret' | base64
+  WEBHOOK_SECRET: Y2hhbmdlbWUtd2ViaG9vay1zZWNyZXQ=
+  # echo -n 'changeme-api-key' | base64
+  API_KEY: Y2hhbmdlbWUtYXBpLWtleQ==
+
+---
+# ---------------------------------------------------------------------------
+# PersistentVolumeClaim - recordings storage
+# ---------------------------------------------------------------------------
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: voip-recordings-pvc
+  namespace: ha-voip
+  labels:
+    app.kubernetes.io/name: voip-engine
+    app.kubernetes.io/component: storage
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 50Gi
+
+---
+# ---------------------------------------------------------------------------
+# NetworkPolicy - restrict ingress to known ports and sources
+# ---------------------------------------------------------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: voip-engine-netpol
+  namespace: ha-voip
+  labels:
+    app.kubernetes.io/name: voip-engine
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: voip-engine
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow SIP/TURN from any source (external clients)
+    - ports:
+        - port: 5060
+          protocol: UDP
+        - port: 5061
+          protocol: TCP
+        - port: 3478
+          protocol: UDP
+        - port: 5349
+          protocol: TCP
+        - port: 8443
+          protocol: TCP
+    # Allow gRPC from ha-integration pods only
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ha-integration
+      ports:
+        - port: 50051
+          protocol: TCP
+    # Allow metrics scraping from monitoring namespace
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 9090
+          protocol: TCP
+  egress:
+    # Allow DNS
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Allow PostgreSQL
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgresql
+      ports:
+        - port: 5432
+          protocol: TCP
+    # Allow outbound RTP/TURN to any destination
+    - ports:
+        - port: 10000
+          endPort: 20000
+          protocol: UDP
+
+---
+# ---------------------------------------------------------------------------
+# HorizontalPodAutoscaler - scale between 2 and 10 replicas at 70% CPU
+# ---------------------------------------------------------------------------
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: voip-engine-hpa
+  namespace: ha-voip
+  labels:
+    app.kubernetes.io/name: voip-engine
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: voip-engine
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+
+---
+# ---------------------------------------------------------------------------
+# PodDisruptionBudget - ensure at least 1 pod is always available
+# ---------------------------------------------------------------------------
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: voip-engine-pdb
+  namespace: ha-voip
+  labels:
+    app.kubernetes.io/name: voip-engine
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: voip-engine

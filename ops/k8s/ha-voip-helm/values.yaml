@@ -1,0 +1,328 @@
+# =============================================================================
+# ha-voip-helm/values.yaml
+# Centralized configuration for the HA-VoIP Helm chart.
+#
+# NOTE: This file is structured as a standard Helm values.yaml.  The sibling
+# manifests in ops/k8s/ can be converted to Helm templates by replacing
+# hard-coded values with {{ .Values.<path> }} references.  For example,
+# `replicas: 2` would become `replicas: {{ .Values.engine.replicas }}`.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Global settings
+# ---------------------------------------------------------------------------
+global:
+  namespace: ha-voip
+  imagePullPolicy: IfNotPresent
+  # imagePullSecrets:
+  #   - name: registry-credentials
+
+# ---------------------------------------------------------------------------
+# VoIP Engine
+# ---------------------------------------------------------------------------
+engine:
+  image:
+    repository: ha-voip/voip-engine
+    tag: latest
+  replicas: 2
+
+  # Resource requests and limits
+  resources:
+    requests:
+      cpu: 500m
+      memory: 256Mi
+    limits:
+      cpu: "2"
+      memory: 1Gi
+
+  # SIP / TURN configuration
+  sip:
+    realm: home.local
+    udpPort: 5060
+    tlsPort: 5061
+  turn:
+    realm: home.local
+    udpPort: 3478
+    tlsPort: 5349
+    maxAllocations: 500
+  rtp:
+    portMin: 10000
+    portMax: 20000
+    jitterBufferMs: 60
+  grpc:
+    port: 50051
+  metrics:
+    port: 9090
+  health:
+    port: 8443
+
+  # TLS certificate (reference to a K8s TLS Secret)
+  tls:
+    secretName: voip-engine-tls
+
+  # Service type for external-facing SIP/TURN
+  service:
+    type: LoadBalancer
+    externalTrafficPolicy: Local
+    annotations: {}
+
+  # Probes
+  livenessProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readinessProbe:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 2
+
+  # Recordings PVC
+  recordings:
+    storageClass: standard
+    size: 50Gi
+
+  # Database connection (value is pulled from a Secret)
+  database:
+    secretName: voip-engine-secrets
+    secretKey: DATABASE_URL
+    maxConnections: 20
+
+  # Log level
+  logLevel: info
+
+# ---------------------------------------------------------------------------
+# HA Integration (Python)
+# ---------------------------------------------------------------------------
+integration:
+  image:
+    repository: ha-voip/ha-integration
+    tag: latest
+  replicas: 1
+
+  resources:
+    requests:
+      cpu: 250m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+  service:
+    type: ClusterIP
+    port: 8123
+
+  logLevel: INFO
+
+# ---------------------------------------------------------------------------
+# PostgreSQL (sub-chart or external)
+# ---------------------------------------------------------------------------
+postgresql:
+  enabled: true
+  image:
+    repository: postgres
+    tag: "16-alpine"
+  auth:
+    username: havoip
+    database: havoip
+    existingSecret: voip-engine-secrets
+    secretKeys:
+      adminPasswordKey: POSTGRES_PASSWORD
+  primary:
+    persistence:
+      storageClass: standard
+      size: 20Gi
+    resources:
+      requests:
+        cpu: 250m
+        memory: 256Mi
+      limits:
+        cpu: "1"
+        memory: 512Mi
+
+# ---------------------------------------------------------------------------
+# Horizontal Pod Autoscaler
+# ---------------------------------------------------------------------------
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 8
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# ---------------------------------------------------------------------------
+# Pod Disruption Budget
+# ---------------------------------------------------------------------------
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# ---------------------------------------------------------------------------
+# NetworkPolicy
+# ---------------------------------------------------------------------------
+networkPolicy:
+  enabled: true
+  # Allow ingress from any source to SIP/TURN ports
+  allowExternalSIP: true
+  # Allow ingress only from Prometheus namespace to metrics port
+  metricsNamespace: monitoring
+
+# ---------------------------------------------------------------------------
+# Monitoring
+# ---------------------------------------------------------------------------
+monitoring:
+  prometheus:
+    enabled: true
+    scrapeInterval: 15s
+  grafana:
+    enabled: true
+    adminUser: admin
+    adminPassword: admin
+    dashboardConfigMap: ha-voip-grafana-dashboard
+
+# ---------------------------------------------------------------------------
+# Ingress (for HTTPS API / WebSocket)
+# ---------------------------------------------------------------------------
+ingress:
+  enabled: false
+  className: nginx
+  annotations: {}
+  hosts:
+    - host: voip.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+---
+# =============================================================================
+# HPA manifest (would be templates/hpa.yaml in Helm)
+# =============================================================================
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: voip-engine-hpa
+  namespace: ha-voip
+  labels:
+    app.kubernetes.io/name: voip-engine
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: voip-engine
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+
+---
+# =============================================================================
+# PDB manifest (would be templates/pdb.yaml in Helm)
+# =============================================================================
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: voip-engine-pdb
+  namespace: ha-voip
+  labels:
+    app.kubernetes.io/name: voip-engine
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: voip-engine
+
+---
+# =============================================================================
+# NetworkPolicy manifest (would be templates/networkpolicy.yaml in Helm)
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: voip-engine-netpol
+  namespace: ha-voip
+  labels:
+    app.kubernetes.io/name: voip-engine
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: voip-engine
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow SIP/TURN from any source
+    - ports:
+        - port: 5060
+          protocol: UDP
+        - port: 5061
+          protocol: TCP
+        - port: 3478
+          protocol: UDP
+        - port: 5349
+          protocol: TCP
+        - port: 8443
+          protocol: TCP
+    # Allow gRPC from ha-integration pods only
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ha-integration
+      ports:
+        - port: 50051
+          protocol: TCP
+    # Allow metrics scraping from monitoring namespace
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 9090
+          protocol: TCP
+  egress:
+    # Allow DNS
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    # Allow PostgreSQL
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgresql
+      ports:
+        - port: 5432
+          protocol: TCP
+    # Allow outbound RTP/TURN to any destination
+    - ports:
+        - port: 10000
+          endPort: 20000
+          protocol: UDP

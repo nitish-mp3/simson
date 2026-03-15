@@ -1,0 +1,127 @@
+# =============================================================================
+# docker-compose.demo.yml - Quick Demo Stack
+# Spins up Home Assistant + VoIP Engine for a loopback call test.
+#
+# Usage:
+#   docker compose -f ops/docker-compose.demo.yml up --build
+#   # then open http://localhost:8123 in a browser
+#
+# To run the headless browser test:
+#   docker compose -f ops/docker-compose.demo.yml --profile test up --build
+#   # This starts all services plus a Playwright test runner that performs
+#   # an automated loopback call between demo-alice and demo-bob.
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Home Assistant - development instance with VoIP integration pre-loaded
+  # ---------------------------------------------------------------------------
+  homeassistant:
+    image: ghcr.io/home-assistant/home-assistant:stable
+    container_name: demo-homeassistant
+    restart: "no"
+    environment:
+      TZ: "UTC"
+    volumes:
+      - ha-config:/config
+      - ../custom_components:/config/custom_components:ro
+      - ../examples/demo-configuration.yaml:/config/configuration.yaml:ro
+    ports:
+      - "8123:8123/tcp"
+    networks:
+      - demo-net
+    depends_on:
+      voip-engine:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8123/api/"]
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # VoIP Engine - SIP/RTP/TURN server
+  # ---------------------------------------------------------------------------
+  voip-engine:
+    build:
+      context: ..
+      dockerfile: ops/docker/Dockerfile.engine
+    image: ha-voip/voip-engine:demo
+    container_name: demo-voip-engine
+    restart: "no"
+    environment:
+      VOIP_ENGINE_LOG_LEVEL: "debug"
+      VOIP_ENGINE_SIP_REALM: "demo.local"
+      VOIP_ENGINE_TURN_REALM: "demo.local"
+      VOIP_ENGINE_EXTERNAL_IP: "127.0.0.1"
+      VOIP_ENGINE_DEMO_MODE: "true"
+      VOIP_ENGINE_RTP_PORT_MIN: "10000"
+      VOIP_ENGINE_RTP_PORT_MAX: "10020"
+      VOIP_ENGINE_METRICS_ADDR: "0.0.0.0:9090"
+      VOIP_ENGINE_GRPC_ADDR: "0.0.0.0:50051"
+      # Demo mode provisions two extensions automatically:
+      #   sip:demo-alice@demo.local  (password: demo1234)
+      #   sip:demo-bob@demo.local    (password: demo1234)
+    volumes:
+      - demo-voip-data:/data/voip
+    ports:
+      - "5060:5060/udp"
+      - "5061:5061/tcp"
+      - "8443:8443/tcp"
+      - "3478:3478/udp"
+      - "10000-10020:10000-10020/udp"
+      - "50051:50051/tcp"
+    networks:
+      - demo-net
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9090/health/live"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+  # ---------------------------------------------------------------------------
+  # Headless Test Runner (activate with --profile test)
+  # Runs a Playwright script that:
+  #   1. Opens the HA frontend
+  #   2. Registers demo-alice via WebRTC
+  #   3. Calls demo-bob (loopback echo)
+  #   4. Asserts audio path is established
+  # ---------------------------------------------------------------------------
+  test-runner:
+    image: mcr.microsoft.com/playwright:v1.42.0-jammy
+    container_name: demo-test-runner
+    restart: "no"
+    working_dir: /tests
+    command: >
+      bash -c "
+        echo 'Waiting for Home Assistant to become healthy...'
+        until curl -sf http://homeassistant:8123/api/ >/dev/null 2>&1; do
+          sleep 2
+        done
+        echo 'HA is up. Running loopback call test...'
+        npx playwright test loopback-call.spec.ts --reporter=list
+        exit_code=\$?
+        echo 'Test finished with exit code '\$exit_code
+        exit \$exit_code
+      "
+    volumes:
+      - ../tests/e2e:/tests:ro
+    networks:
+      - demo-net
+    depends_on:
+      homeassistant:
+        condition: service_healthy
+    profiles:
+      - test
+
+networks:
+  demo-net:
+    driver: bridge
+
+volumes:
+  ha-config:
+    driver: local
+  demo-voip-data:
+    driver: local
