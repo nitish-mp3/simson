@@ -7,7 +7,7 @@ ARG BUILD_FROM
 # needed. BUILD_VERSION (injected by HA supervisor) busts the Docker cache
 # on every version bump so you always get fresh code.
 # =============================================================================
-FROM rust:1.75-bookworm AS builder
+FROM rust:1.85-bookworm AS builder
 
 ARG BUILD_VERSION=dev
 
