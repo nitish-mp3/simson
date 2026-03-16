@@ -30,7 +30,7 @@ config = "0.14"
 prometheus = "0.13"
 uuid = { version = "1", features = ["v4"] }
 tokio-util = { version = "0.7", features = ["codec"] }
-tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+tokio-tungstenite = { version = "0.21", features = ["rustls-tls-native-roots"] }
 futures = "0.3"
 futures-util = "0.3"
 async-trait = "0.1"

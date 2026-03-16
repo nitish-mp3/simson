@@ -1,0 +1,99 @@
+name: Build and Release Binaries
+
+# Trigger on version tags like "1.1.0", "1.2.3" etc.
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            arch: amd64
+          - target: aarch64-unknown-linux-gnu
+            arch: aarch64
+          - target: armv7-unknown-linux-gnueabihf
+            arch: armv7
+          - target: arm-unknown-linux-gnueabihf
+            arch: armhf
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install host build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            protobuf-compiler libprotobuf-dev
+
+      - name: Install Rust stable + target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo registry + build artefacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            voip-engine/target
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('voip-engine/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.target }}-
+
+      - name: Install cross
+        run: cargo install cross --locked
+
+      - name: Build release binary
+        working-directory: voip-engine
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Strip binary
+        run: |
+          strip_tool="strip"
+          case "${{ matrix.target }}" in
+            aarch64-*) strip_tool="aarch64-linux-gnu-strip" ;;
+            armv7-*)   strip_tool="arm-linux-gnueabihf-strip" ;;
+            arm-*)     strip_tool="arm-linux-gnueabihf-strip" ;;
+          esac
+          if command -v "$strip_tool" >/dev/null 2>&1; then
+            $strip_tool "voip-engine/target/${{ matrix.target }}/release/voip-engine"
+          fi
+          cp "voip-engine/target/${{ matrix.target }}/release/voip-engine" \
+             "voip-engine-${{ matrix.arch }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: voip-engine-${{ matrix.arch }}
+          path: voip-engine-${{ matrix.arch }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          files: artifacts/voip-engine-*

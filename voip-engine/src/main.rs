@@ -288,7 +288,7 @@ async fn main() -> Result<()> {
             };
 
             axum::serve(listener, app)
-                .with_graceful_shutdown(async {
+                .with_graceful_shutdown(async move {
                     let _ = shutdown_rx.recv().await;
                 })
                 .await
