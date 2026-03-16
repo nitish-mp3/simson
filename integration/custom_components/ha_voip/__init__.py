@@ -11,6 +11,7 @@ This custom component provides full VoIP (Voice over IP) functionality:
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -35,6 +36,55 @@ _LOGGER = logging.getLogger(__name__)
 # Type alias for the dict stored under hass.data[DOMAIN][entry.entry_id]
 type HaVoipData = dict[str, Any]
 
+_FRONTEND_REGISTERED = False
+_CARD_URL = f"/{DOMAIN}/voip-card.js"
+
+
+def _register_frontend(hass: HomeAssistant) -> None:
+    """Serve the www/ folder and auto-register the Lovelace resource."""
+    global _FRONTEND_REGISTERED  # noqa: PLW0603
+    if _FRONTEND_REGISTERED:
+        return
+    _FRONTEND_REGISTERED = True
+
+    www = str(Path(__file__).parent / "www")
+    hass.http.register_static_path(_CARD_URL, www + "/voip-card.js", cache_headers=False)
+
+    # Auto-add the resource so users don't have to configure it manually
+    hass.async_create_task(_async_add_lovelace_resource(hass))
+
+
+async def _async_add_lovelace_resource(hass: HomeAssistant) -> None:
+    """Add the card JS as a Lovelace resource if not already present."""
+    try:
+        from homeassistant.components.lovelace import (  # noqa: PLC0415
+            ResourceStorageCollection,
+        )
+        from homeassistant.components.lovelace.const import (  # noqa: PLC0415
+            DOMAIN as LL_DOMAIN,
+        )
+
+        ll_data = hass.data.get(LL_DOMAIN)
+        if ll_data is None:
+            return
+        resources: ResourceStorageCollection | None = getattr(ll_data, "resources", None)
+        if resources is None:
+            return
+
+        # Check if already registered
+        for item in resources.async_items():
+            if item.get("url", "").endswith("voip-card.js"):
+                return
+
+        await resources.async_create_item({"res_type": "module", "url": _CARD_URL})
+        _LOGGER.info("Registered Lovelace resource %s", _CARD_URL)
+    except Exception:  # noqa: BLE001
+        _LOGGER.debug(
+            "Could not auto-register Lovelace resource — add manually: "
+            "Settings → Dashboards → Resources → %s (JavaScript Module)",
+            _CARD_URL,
+        )
+
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -50,6 +100,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _LOGGER.info("Setting up HA VoIP integration (entry=%s)", entry.entry_id)
 
     hass.data.setdefault(DOMAIN, {})
+
+    # 0. Serve the Lovelace card JS from custom_components/<domain>/www/
+    _register_frontend(hass)
 
     # 1. Engine process management (local mode only)
     engine_manager: EngineManager | None = None
