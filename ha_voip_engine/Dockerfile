@@ -1,20 +1,38 @@
 ARG BUILD_FROM
-ARG BUILD_ARCH=amd64
+
+# =============================================================================
+# Stage 1: Compile the voip-engine Rust binary
+# Source is cloned from GitHub at build time. BUILD_VERSION (injected by HA
+# supervisor) busts the Docker layer cache on every version bump.
+# =============================================================================
+FROM rust:1.85-bookworm AS builder
+
 ARG BUILD_VERSION=dev
 
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        cmake \
+        pkg-config \
+        libssl-dev \
+        protobuf-compiler \
+        libprotobuf-dev \
+        git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+RUN echo "Building version: ${BUILD_VERSION}" \
+    && git clone --depth 1 https://github.com/nitish-mp3/simson.git /repo \
+    && cp -r /repo/voip-engine/. /build/ \
+    && rm -rf /repo
+
+RUN cargo build --release \
+    && strip ./target/release/voip-engine
+
 # =============================================================================
-# Single-stage HA add-on image.
-#
-# The voip-engine binary is pre-built for all 4 architectures by GitHub
-# Actions and attached to each GitHub Release.  HA supervisor injects
-# BUILD_VERSION (= config.yaml version) and BUILD_ARCH automatically so
-# the correct binary is downloaded.  Build time: ~20 seconds instead of
-# 30+ minutes.
+# Stage 2: HA add-on runtime image
 # =============================================================================
 FROM ${BUILD_FROM}
-
-ARG BUILD_ARCH
-ARG BUILD_VERSION
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libssl3 \
@@ -24,11 +42,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get purge -y --auto-remove
 
-# Download the pre-built binary for this architecture from GitHub Releases.
-RUN curl -fSL \
-    "https://github.com/nitish-mp3/simson/releases/download/${BUILD_VERSION}/voip-engine-${BUILD_ARCH}" \
-    -o /usr/local/bin/voip-engine \
-    && chmod 755 /usr/local/bin/voip-engine
+COPY --from=builder /build/target/release/voip-engine /usr/local/bin/voip-engine
+RUN chmod 755 /usr/local/bin/voip-engine
 
 RUN mkdir -p /data/voip/recordings /data/voip/certs
 
