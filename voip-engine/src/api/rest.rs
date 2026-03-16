@@ -327,6 +327,54 @@ async fn relay_ice(
     Json(serde_json::json!({ "accepted": true })).into_response()
 }
 
+// ── POST /api/calls/:id/answer ─────────────────────────────────────────────────
+
+async fn answer_call(
+    State(state): State<RestState>,
+    Path(call_id): Path<String>,
+) -> impl IntoResponse {
+    match state.active_calls.get_mut(&call_id) {
+        Some(mut call) => {
+            call.state = proto::CallState::Confirmed as i32;
+            debug!(call_id = %call_id, "REST: call answered");
+            Json(serde_json::json!({ "status": "answered" })).into_response()
+        }
+        None => err(StatusCode::NOT_FOUND, "Call not found").into_response(),
+    }
+}
+
+// ── POST /api/calls/:id/hold ───────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct HoldBody {
+    #[serde(default = "default_true")]
+    hold: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+async fn hold_call(
+    State(state): State<RestState>,
+    Path(call_id): Path<String>,
+    body: Option<Json<HoldBody>>,
+) -> impl IntoResponse {
+    let hold = body.map(|b| b.hold).unwrap_or(true);
+    match state.active_calls.get_mut(&call_id) {
+        Some(mut call) => {
+            // 6 = on_hold (extension of the proto enum), 4 = confirmed/active
+            call.state = if hold { 6 } else { proto::CallState::Confirmed as i32 };
+            debug!(call_id = %call_id, hold = hold, "REST: call hold toggled");
+            Json(serde_json::json!({
+                "status": if hold { "on_hold" } else { "active" }
+            }))
+            .into_response()
+        }
+        None => err(StatusCode::NOT_FOUND, "Call not found").into_response(),
+    }
+}
+
 // ── Serialisation helpers ─────────────────────────────────────────────────────
 
 fn call_to_json(c: &proto::CallInfo) -> serde_json::Value {
@@ -358,6 +406,7 @@ fn call_state_name(state: i32) -> &'static str {
         3 => "early",
         4 => "confirmed",
         5 => "terminated",
+        6 => "on_hold",
         _ => "unknown",
     }
 }
@@ -369,6 +418,8 @@ pub fn build_rest_router(state: Arc<ServiceState>) -> Router {
     Router::new()
         .route("/api/calls", get(list_calls).post(originate_call))
         .route("/api/calls/:id/hangup", post(hangup_call))
+        .route("/api/calls/:id/answer", post(answer_call))
+        .route("/api/calls/:id/hold", post(hold_call))
         .route("/api/calls/:id/transfer", post(transfer_call))
         .route("/api/calls/:id/mute", post(toggle_mute))
         .route("/api/calls/:id/recording", post(toggle_recording))

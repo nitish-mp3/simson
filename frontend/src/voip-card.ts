@@ -310,6 +310,9 @@ export class HaVoipCard extends LitElement implements LovelaceCard {
 
   private _webrtc: WebRtcManager;
   private _unsubscribe?: () => void;
+  private _isSubscribing = false;
+  private _hasSubscriptionError = false;
+  private _subscribeRetryTimer?: number;
   private _remoteAudio: HTMLAudioElement | null = null;
   private _ringtoneAudio: HTMLAudioElement | null = null;
 
@@ -1006,9 +1009,19 @@ export class HaVoipCard extends LitElement implements LovelaceCard {
 
   /* ── WebSocket subscription ────────────────────────────────────────────── */
 
-  private async _subscribeWs(): Promise<void> {
-    if (!this.hass) return;
+  private _clearSubscribeRetryTimer(): void {
+    if (this._subscribeRetryTimer) {
+      window.clearTimeout(this._subscribeRetryTimer);
+      this._subscribeRetryTimer = undefined;
+    }
+  }
 
+  private async _subscribeWs(): Promise<void> {
+    if (!this.hass || this._isSubscribing) return;
+
+    this._clearSubscribeRetryTimer();
+
+    this._isSubscribing = true;
     try {
       const unsub = await this.hass.connection.subscribeMessage<VoipEvent>(
         (event) => this._handleVoipEvent(event),
@@ -1019,12 +1032,29 @@ export class HaVoipCard extends LitElement implements LovelaceCard {
       // Fetch initial state
       this._fetchExtensions();
       this._fetchHistory();
-    } catch (err) {
-      console.error("[VoIP Card] Failed to subscribe:", err);
+    } catch (err: any) {
+      // Only log this error once to avoid console spam when retrying.
+      if (!this._hasSubscriptionError) {
+        console.error("[VoIP Card] Failed to subscribe:", err);
+        this._hasSubscriptionError = true;
+      }
+
+      // If the backend is not ready yet, retry a few seconds later.
+      // This helps when HA reloads and the integration isn't immediately
+      // ready to accept the subscription.
+      if (err?.code === "unknown_command" || err?.message?.includes("unknown_command")) {
+        this._subscribeRetryTimer = window.setTimeout(() => {
+          this._subscribeWs();
+        }, 2500);
+      }
+    } finally {
+      this._isSubscribing = false;
     }
   }
 
   private _unsubscribeWs(): void {
+    this._clearSubscribeRetryTimer();
+
     if (this._unsubscribe) {
       this._unsubscribe();
       this._unsubscribe = undefined;
@@ -1224,7 +1254,8 @@ export class HaVoipCard extends LitElement implements LovelaceCard {
   private _createRemoteAudio(): void {
     this._remoteAudio = document.createElement("audio");
     this._remoteAudio.autoplay = true;
-    this._remoteAudio.playsInline = true;
+    // playsInline is supported by browsers but missing from TS lib in some versions
+    (this._remoteAudio as any).playsInline = true;
     // Append to body so it persists outside shadow DOM
     document.body.appendChild(this._remoteAudio);
   }

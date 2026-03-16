@@ -36,10 +36,13 @@ _LOGGER = logging.getLogger(__name__)
 # Type alias for the dict stored under hass.data[DOMAIN][entry.entry_id]
 type HaVoipData = dict[str, Any]
 
+# Internal registration guards
 _FRONTEND_REGISTERED = False
-_CARD_URL   = f"/{DOMAIN}/voip-card.js"
-_JSSIP_URL  = f"/{DOMAIN}/jssip.min.js"
-_PHONE_URL  = f"/{DOMAIN}/phone.html"
+_WS_COMMANDS_REGISTERED = False
+
+_CARD_URL = f"/{DOMAIN}/voip-card.js"
+_JSSIP_URL = f"/{DOMAIN}/jssip.min.js"
+_PHONE_URL = f"/{DOMAIN}/phone.html"
 _PANEL_PATH = "voip-phone"
 
 
@@ -132,6 +135,23 @@ async def _async_add_lovelace_resource(hass: HomeAssistant) -> None:
 # ---------------------------------------------------------------------------
 
 
+async def async_setup(hass: HomeAssistant, config: dict) -> bool:
+    """Set up the HA VoIP component."""
+    hass.data.setdefault(DOMAIN, {})
+
+    # 0. Serve the Lovelace card JS from custom_components/<domain>/www/
+    _register_frontend(hass)
+
+    # Register WebSocket API commands once so the card can connect even if the
+    # integration reloads or an entry fails to fully initialize.
+    global _WS_COMMANDS_REGISTERED  # noqa: PLW0603
+    if not _WS_COMMANDS_REGISTERED:
+        async_register_websocket_api(hass)
+        _WS_COMMANDS_REGISTERED = True
+
+    return True
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up HA VoIP from a config entry.
 
@@ -142,8 +162,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})
 
-    # 0. Serve the Lovelace card JS from custom_components/<domain>/www/
-    _register_frontend(hass)
+    # Ensure WebSocket commands are registered even if the integration
+    # is reloaded multiple times.
+    global _WS_COMMANDS_REGISTERED  # noqa: PLW0603
+    if not _WS_COMMANDS_REGISTERED:
+        async_register_websocket_api(hass)
+        _WS_COMMANDS_REGISTERED = True
 
     # 1. Engine process management (local mode only)
     engine_manager: EngineManager | None = None
@@ -174,10 +198,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # 5. Register services
     await async_register_services(hass)
 
-    # 6. Register WebSocket API commands
-    async_register_websocket_api(hass)
-
-    # 7. Listen for options updates so we can reconfigure at runtime
+    # 6. Listen for options updates so we can reconfigure at runtime
     unsub_options = entry.add_update_listener(_async_options_updated)
     hass.data[DOMAIN][DATA_UNSUB_LISTENERS].append(unsub_options)
 

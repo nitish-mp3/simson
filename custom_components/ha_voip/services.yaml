@@ -1,0 +1,139 @@
+make_call:
+  name: Make Call
+  description: >
+    Originate an outbound SIP call from an extension managed by the VoIP engine.
+    Returns a `call_id` you can use with other services.
+  fields:
+    target:
+      name: Target
+      description: "SIP URI or extension number to call (e.g. '1002' or 'sip:alice@pbx.local')."
+      required: true
+      example: "1002"
+      selector:
+        text:
+    from_extension:
+      name: From Extension
+      description: "Extension number to place the call from (must be registered with the engine)."
+      required: true
+      example: "1001"
+      selector:
+        text:
+    caller_id:
+      name: Caller ID
+      description: "Display name shown to the called party. Leave blank to use the extension display name."
+      required: false
+      default: ""
+      example: "Home Automation"
+      selector:
+        text:
+    codec:
+      name: Codec
+      description: "Audio codec preference for this call. Defaults to Opus."
+      required: false
+      default: "opus"
+      example: "opus"
+      selector:
+        select:
+          options:
+            - "opus"
+            - "g711_ulaw"
+            - "g711_alaw"
+            - "g722"
+    auto_answer:
+      name: Auto-Answer
+      description: "Automatically answer the call if the target rings back (attended transfer scenarios)."
+      required: false
+      default: false
+      selector:
+        boolean:
+    record:
+      name: Record Call
+      description: "Start recording this call immediately on connect."
+      required: false
+      default: false
+      selector:
+        boolean:
+
+hangup:
+  name: Hang Up
+  description: Terminate an active or ringing call.
+  fields:
+    call_id:
+      name: Call ID
+      description: "The unique call identifier returned by make_call or from the voip.call_started event."
+      required: true
+      example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+      selector:
+        text:
+
+transfer:
+  name: Transfer Call
+  description: Transfer an active call to another extension or SIP URI.
+  fields:
+    call_id:
+      name: Call ID
+      description: "Identifier of the call to transfer."
+      required: true
+      example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+      selector:
+        text:
+    target:
+      name: Transfer Target
+      description: "Extension or SIP URI to transfer the call to."
+      required: true
+      example: "1003"
+      selector:
+        text:
+    blind:
+      name: Blind Transfer
+      description: >
+        When true (default) the call is transferred immediately without waiting for
+        the target to answer (blind/unattended transfer). When false an attended
+        transfer is attempted.
+      required: false
+      default: true
+      selector:
+        boolean:
+
+record_toggle:
+  name: Toggle Recording
+  description: Start or stop call recording on an active call.
+  fields:
+    call_id:
+      name: Call ID
+      description: "Identifier of the call to toggle recording on."
+      required: true
+      example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+      selector:
+        text:
+
+mute_toggle:
+  name: Toggle Mute
+  description: Mute or unmute the microphone on an active call.
+  fields:
+    call_id:
+      name: Call ID
+      description: "Identifier of the call to toggle mute on."
+      required: true
+      example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+      selector:
+        text:
+
+send_dtmf:
+  name: Send DTMF
+  description: Send DTMF tone(s) during an active call (e.g. to navigate IVR menus).
+  fields:
+    call_id:
+      name: Call ID
+      description: "Identifier of the call on which to send DTMF."
+      required: true
+      example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+      selector:
+        text:
+    digits:
+      name: Digits
+      description: "One or more DTMF digits to send. Valid characters: 0-9, A-D, *, #."
+      required: true
+      example: "1234#"
+      selector:
+        text:

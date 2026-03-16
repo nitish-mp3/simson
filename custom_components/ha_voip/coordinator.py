@@ -393,6 +393,22 @@ class EngineClient:
         )
         return result is not None
 
+    async def answer_call(self, call_id: str) -> bool:
+        """Answer an incoming call."""
+        if not self._connected:
+            return False
+        result = await self._post_json(f"/api/calls/{call_id}/answer", {})
+        return result is not None
+
+    async def hold_call(self, call_id: str, hold: bool = True) -> bool:
+        """Hold or resume a call."""
+        if not self._connected:
+            return False
+        result = await self._post_json(
+            f"/api/calls/{call_id}/hold", {"hold": hold}
+        )
+        return result is not None
+
 
 # ---------------------------------------------------------------------------
 # Coordinator
