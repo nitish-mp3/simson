@@ -433,7 +433,7 @@ impl WsTransport {
         });
 
         // Ping/pong keepalive task
-        let ping_sinks = Arc::clone(&sinks);
+        let ping_sinks: Arc<DashMap<SocketAddr, WsSink>> = Arc::clone(&sinks);
         tokio::spawn(async move {
             let mut interval = time::interval(Duration::from_secs(30));
             loop {

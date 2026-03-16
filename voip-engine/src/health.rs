@@ -201,12 +201,20 @@ pub async fn readiness_handler(checker: Arc<HealthChecker>) -> impl IntoResponse
 mod tests {
     use super::*;
     use crate::config::{EngineConfig, TurnConfig};
+    use crate::turn_server::ConfigCredentialProvider;
+
+    fn make_test_turn() -> Arc<TurnServer> {
+        let cfg = TurnConfig::default();
+        let creds: Arc<dyn crate::turn_server::CredentialProvider> =
+            Arc::new(ConfigCredentialProvider::from_config(&cfg));
+        TurnServer::new(cfg, creds)
+    }
 
     #[test]
     fn test_liveness_always_healthy() {
         let db = Arc::new(Database::new(":memory:", "sqlite").unwrap());
         db.init_schema().unwrap();
-        let turn = Arc::new(TurnServer::new(TurnConfig::default(), Arc::new(crate::metrics::VoipMetrics::new())));
+        let turn = make_test_turn();
         let config = Arc::new(EngineConfig::default());
         let checker = HealthChecker::new(db, turn, config);
 
@@ -218,7 +226,7 @@ mod tests {
     fn test_readiness_with_healthy_db() {
         let db = Arc::new(Database::new(":memory:", "sqlite").unwrap());
         db.init_schema().unwrap();
-        let turn = Arc::new(TurnServer::new(TurnConfig::default(), Arc::new(crate::metrics::VoipMetrics::new())));
+        let turn = make_test_turn();
         let config = Arc::new(EngineConfig::default());
         let checker = HealthChecker::new(db, turn, config);
 

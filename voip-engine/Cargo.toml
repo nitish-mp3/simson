@@ -31,7 +31,9 @@ prometheus = "0.13"
 uuid = { version = "1", features = ["v4"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+futures = "0.3"
 futures-util = "0.3"
+async-trait = "0.1"
 dashmap = "5"
 parking_lot = "0.12"
 rusqlite = { version = "0.31", features = ["bundled"] }

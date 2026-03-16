@@ -128,7 +128,7 @@ fn srtp_kdf(
 
 /// Compute the SRTP authentication tag (HMAC-SHA1, truncated to 80 bits).
 fn compute_auth_tag(auth_key: &[u8], data: &[u8], roc: u32) -> Result<Vec<u8>, SrtpError> {
-    let mut mac = HmacSha1::new_from_slice(auth_key)
+    let mut mac = <HmacSha1 as Mac>::new_from_slice(auth_key)
         .map_err(|e| SrtpError::Encryption(e.to_string()))?;
     mac.update(data);
     mac.update(&roc.to_be_bytes());
@@ -139,7 +139,7 @@ fn compute_auth_tag(auth_key: &[u8], data: &[u8], roc: u32) -> Result<Vec<u8>, S
 /// Compute the SRTCP authentication tag (ROC is already embedded in the
 /// packet as the SRTCP index, so we pass 0).
 fn compute_rtcp_auth_tag(auth_key: &[u8], data: &[u8]) -> Result<Vec<u8>, SrtpError> {
-    let mut mac = HmacSha1::new_from_slice(auth_key)
+    let mut mac = <HmacSha1 as Mac>::new_from_slice(auth_key)
         .map_err(|e| SrtpError::Encryption(e.to_string()))?;
     mac.update(data);
     let result = mac.finalize().into_bytes();

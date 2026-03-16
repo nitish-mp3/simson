@@ -741,7 +741,8 @@ pub struct TurnServer {
     pub credentials: Arc<dyn CredentialProvider>,
     pub config: TurnConfig,
     rate_limiter: IpRateLimiter,
-    shutdown: Arc<Notify>,
+    pub shutdown: Arc<Notify>,
+    running: AtomicBool,
     next_relay_port: AtomicU16,
 }
 
@@ -755,13 +756,20 @@ impl TurnServer {
             next_relay_port: AtomicU16::new(config.relay_port_start),
             config,
             shutdown: Arc::new(Notify::new()),
+            running: AtomicBool::new(false),
         })
+    }
+
+    /// Check whether the TURN server is currently running.
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::Acquire)
     }
 
     /// Start the TURN server on the configured UDP port.
     pub async fn start(self: &Arc<Self>, bind_addr: &str) -> Result<JoinHandle<()>, TurnError> {
         let addr = format!("{bind_addr}:{}", self.config.port);
         let socket = Arc::new(UdpSocket::bind(&addr).await?);
+        self.running.store(true, Ordering::Release);
         info!(addr = %addr, "TURN server listening (UDP)");
 
         // Periodic cleanup task.
