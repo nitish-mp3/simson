@@ -26,6 +26,7 @@ from .const import (
     CALL_STATE_RINGING,
     CALL_STATE_TRANSFERRING,
     CONF_ENGINE_HOST,
+    CONF_EXTERNAL_HOST,
     CONF_GRPC_PORT,
     DEFAULT_ENGINE_HOST,
     DEFAULT_GRPC_PORT,
@@ -132,27 +133,39 @@ class GrpcClient:
     # -- lifecycle -----------------------------------------------------------
 
     async def connect(self) -> None:
-        """Open gRPC channel to voip-engine."""
-        try:
-            import grpc  # type: ignore[import-untyped]
+        """Verify engine is reachable via its HTTP health endpoint (port 8080)."""
+        import aiohttp  # type: ignore[import-untyped]
 
-            target = f"{self._host}:{self._port}"
-            self._channel = grpc.aio.insecure_channel(target)
-            # Attempt to wait for the channel to be ready
-            await asyncio.wait_for(
-                self._channel.channel_ready(), timeout=5.0
-            )
-            self._connected = True
-            _LOGGER.info("gRPC channel connected to %s", target)
-        except Exception as exc:  # noqa: BLE001
-            self._connected = False
-            _LOGGER.warning("Failed to connect gRPC channel: %s", exc)
+        # Try the configured host first, then 127.0.0.1 as a fallback
+        # (127.0.0.1 works when HA and the add-on share the host network namespace)
+        candidates = [self._host]
+        if "127.0.0.1" not in candidates:
+            candidates.append("127.0.0.1")
+
+        for candidate in candidates:
+            url = f"http://{candidate}:8080/health/live"
+            try:
+                async with aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=5.0)
+                ) as session:
+                    async with session.get(url) as resp:
+                        if resp.status == 200:
+                            self._host = candidate  # lock onto working host
+                            self._connected = True
+                            _LOGGER.info("Connected to voip-engine at %s", url)
+                            return
+            except Exception:  # noqa: BLE001
+                continue
+
+        _LOGGER.warning(
+            "Cannot reach voip-engine health endpoint on any candidate host: %s",
+            candidates,
+        )
+        self._connected = False
 
     async def disconnect(self) -> None:
-        """Close gRPC channel."""
-        if self._channel is not None:
-            await self._channel.close()
-            self._channel = None
+        """Mark the connection as closed."""
+        self._channel = None
         self._connected = False
 
     @property
@@ -163,16 +176,25 @@ class GrpcClient:
     # -- RPC wrappers --------------------------------------------------------
 
     async def get_status(self) -> dict[str, Any]:
-        """Call GetStatus RPC."""
-        if not self._connected:
-            raise ConnectionError("gRPC channel is not connected")
+        """Return engine status via HTTP health check."""
+        import aiohttp  # type: ignore[import-untyped]
+
+        url = f"http://{self._host}:8080/health/ready"
         try:
-            # When proto stubs are generated the call looks like:
-            #   response = await self._stub.GetStatus(empty_pb2.Empty())
-            # Until then we perform a health-check style probe.
-            await self._channel.channel_ready()
-            return {"state": ENGINE_STATE_RUNNING}
-        except Exception as exc:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=5.0)
+            ) as session:
+                async with session.get(url) as resp:
+                    if resp.status == 200:
+                        self._connected = True
+                        return {"state": ENGINE_STATE_RUNNING}
+                    self._connected = False
+                    raise ConnectionError(
+                        f"Engine health check returned HTTP {resp.status}"
+                    )
+        except ConnectionError:
+            raise
+        except Exception as exc:  # noqa: BLE001
             self._connected = False
             raise ConnectionError(f"GetStatus failed: {exc}") from exc
 
@@ -286,20 +308,17 @@ class VoipDataUpdateCoordinator(DataUpdateCoordinator[VoipData]):
             update_interval=timedelta(seconds=UPDATE_INTERVAL_SECONDS),
             config_entry=config_entry,
         )
+        # Explicit remote-mode host takes priority; fall back to the external_host
+        # the user set in the config flow (their LAN IP), which the add-on's
+        # host_network services are accessible at from the HA core container.
         host = (
             config_entry.data.get(CONF_ENGINE_HOST)
             or config_entry.options.get(CONF_ENGINE_HOST)
+            or config_entry.data.get(CONF_EXTERNAL_HOST)
+            or config_entry.options.get(CONF_EXTERNAL_HOST)
         )
-        if not host:
-            # Auto-detect: the add-on runs with host_network=true and binds on the
-            # HA machine's own IP.  hass.config.api.host is that same IP, so gRPC
-            # traffic from the core container reaches the add-on correctly.
-            _api = getattr(hass.config, "api", None)
-            _api_host = getattr(_api, "host", None)
-            if _api_host and _api_host not in ("", "0.0.0.0"):
-                host = _api_host
-            else:
-                host = DEFAULT_ENGINE_HOST
+        if not host or host in ("", "0.0.0.0"):
+            host = DEFAULT_ENGINE_HOST
         port = config_entry.data.get(CONF_GRPC_PORT, DEFAULT_GRPC_PORT)
         self.grpc_client = GrpcClient(host, port)
         self._event_task: asyncio.Task[None] | None = None
