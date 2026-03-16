@@ -37,21 +37,62 @@ _LOGGER = logging.getLogger(__name__)
 type HaVoipData = dict[str, Any]
 
 _FRONTEND_REGISTERED = False
-_CARD_URL = f"/{DOMAIN}/voip-card.js"
+_CARD_URL   = f"/{DOMAIN}/voip-card.js"
+_JSSIP_URL  = f"/{DOMAIN}/jssip.min.js"
+_PHONE_URL  = f"/{DOMAIN}/phone.html"
+_PANEL_PATH = "voip-phone"
 
 
 def _register_frontend(hass: HomeAssistant) -> None:
-    """Serve the www/ folder and auto-register the Lovelace resource."""
+    """Serve the www/ folder, register Lovelace resource, and add sidebar panel."""
     global _FRONTEND_REGISTERED  # noqa: PLW0603
     if _FRONTEND_REGISTERED:
         return
     _FRONTEND_REGISTERED = True
 
-    www = str(Path(__file__).parent / "www")
-    hass.http.register_static_path(_CARD_URL, www + "/voip-card.js", cache_headers=False)
+    www = Path(__file__).parent / "www"
 
-    # Auto-add the resource so users don't have to configure it manually
-    hass.async_create_task(_async_add_lovelace_resource(hass))
+    # Register voip-card.js for Lovelace
+    js_path = str(www / "voip-card.js")
+    if Path(js_path).is_file():
+        hass.http.register_static_path(_CARD_URL, js_path, cache_headers=False)
+        _LOGGER.info("Registered Lovelace card at %s", _CARD_URL)
+        hass.async_create_task(_async_add_lovelace_resource(hass))
+    else:
+        _LOGGER.warning("voip-card.js not found at %s", js_path)
+
+    # Register jssip.min.js (bundled locally — no CDN dependency)
+    jssip_path = str(www / "jssip.min.js")
+    if Path(jssip_path).is_file():
+        hass.http.register_static_path(_JSSIP_URL, jssip_path, cache_headers=True)
+        _LOGGER.info("Registered JsSIP library at %s", _JSSIP_URL)
+    else:
+        _LOGGER.warning(
+            "jssip.min.js not found at %s — phone.html SIP features unavailable",
+            jssip_path,
+        )
+
+    # Register standalone phone.html and add it as a sidebar panel
+    html_path = str(www / "phone.html")
+    if Path(html_path).is_file():
+        hass.http.register_static_path(_PHONE_URL, html_path, cache_headers=False)
+        _LOGGER.info("Registered phone UI at %s", _PHONE_URL)
+        try:
+            from homeassistant.components import frontend  # noqa: PLC0415
+            frontend.async_register_built_in_panel(
+                hass,
+                component_name="iframe",
+                sidebar_title="VoIP Phone",
+                sidebar_icon="mdi:phone",
+                frontend_url_path=_PANEL_PATH,
+                config={"url": _PHONE_URL},
+                require_admin=False,
+            )
+            _LOGGER.info("Registered VoIP Phone sidebar panel at /%s", _PANEL_PATH)
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("Could not register sidebar panel — phone available at %s", _PHONE_URL)
+    else:
+        _LOGGER.warning("phone.html not found at %s", html_path)
 
 
 async def _async_add_lovelace_resource(hass: HomeAssistant) -> None:
@@ -115,7 +156,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             # We still continue -- the coordinator will report it as
             # unreachable and the user can fix paths / restart.
 
-    # 2. Data update coordinator (gRPC polling + event streaming)
+    # 2. Data update coordinator (HTTP health polling + event monitoring)
     coordinator = VoipDataUpdateCoordinator(hass, entry)
     await coordinator.async_connect()
     await coordinator.async_config_entry_first_refresh()
@@ -187,7 +228,18 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # 5. Unregister services
     await async_unregister_services(hass)
 
-    # 6. Clean up hass.data
+    # 6. Remove sidebar panel
+    try:
+        from homeassistant.components import frontend  # noqa: PLC0415
+        frontend.async_remove_panel(hass, _PANEL_PATH)
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 7. Reset frontend registration flag so reload re-registers
+    global _FRONTEND_REGISTERED  # noqa: PLW0603
+    _FRONTEND_REGISTERED = False
+
+    # 8. Clean up hass.data
     hass.data.pop(DOMAIN, None)
 
     _LOGGER.info("HA VoIP integration unloaded")

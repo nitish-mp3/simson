@@ -236,10 +236,25 @@ class EngineManager:
         except FileNotFoundError:
             _LOGGER.info(
                 "voip-engine binary not found at '%s'; "
-                "assuming engine is already running as an HA add-on.",
+                "checking if engine is already running (add-on / external).",
                 binary,
             )
-            self._set_state(ENGINE_STATE_RUNNING)
+            # Verify the engine is actually reachable before claiming it's running
+            if await self._probe_engine_health():
+                _LOGGER.info("Engine is reachable — running externally")
+                self._set_state(ENGINE_STATE_RUNNING)
+            else:
+                _LOGGER.warning(
+                    "Engine binary not found and health endpoint unreachable. "
+                    "Install the HA VoIP add-on or set the engine binary path "
+                    "in integration options."
+                )
+                self._set_state(ENGINE_STATE_ERROR)
+            # Start health loop even without a managed process so
+            # we detect when an external engine comes online / goes down
+            self._health_task = self._hass.async_create_task(
+                self._health_loop(), "ha_voip_health_check"
+            )
             return
         except OSError as exc:
             _LOGGER.error("Failed to start voip-engine: %s", exc)
@@ -304,17 +319,54 @@ class EngineManager:
 
     # -- Health monitoring ----------------------------------------------------
 
+    async def _probe_engine_health(self) -> bool:
+        """Check if the engine HTTP health endpoint is reachable."""
+        import aiohttp  # type: ignore[import-untyped]
+
+        data = self._config_entry.data
+        opts = self._config_entry.options
+        host = (
+            opts.get(CONF_EXTERNAL_HOST)
+            or data.get(CONF_EXTERNAL_HOST)
+            or DEFAULT_ENGINE_HOST
+        )
+
+        for candidate in [host, DEFAULT_ENGINE_HOST]:
+            url = f"http://{candidate}:8080/health/live"
+            try:
+                async with aiohttp.ClientSession(
+                    timeout=aiohttp.ClientTimeout(total=3.0)
+                ) as session:
+                    async with session.get(url) as resp:
+                        if resp.status == 200:
+                            return True
+            except Exception:  # noqa: BLE001
+                continue
+        return False
+
     async def _health_loop(self) -> None:
         """Periodically check whether the engine process is still alive."""
         try:
             while self._should_run:
                 await asyncio.sleep(ENGINE_HEALTH_CHECK_INTERVAL)
-                if not self.is_running and self._should_run:
-                    _LOGGER.warning(
-                        "voip-engine exited unexpectedly (code=%s)",
-                        self._process.returncode if self._process else "?",
-                    )
-                    await self._attempt_restart()
+
+                if self._process is not None:
+                    # Managed subprocess mode
+                    if not self.is_running and self._should_run:
+                        _LOGGER.warning(
+                            "voip-engine exited unexpectedly (code=%s)",
+                            self._process.returncode if self._process else "?",
+                        )
+                        await self._attempt_restart()
+                else:
+                    # External engine mode — monitor via health endpoint
+                    reachable = await self._probe_engine_health()
+                    if reachable and self._state != ENGINE_STATE_RUNNING:
+                        _LOGGER.info("External engine came online")
+                        self._set_state(ENGINE_STATE_RUNNING)
+                    elif not reachable and self._state == ENGINE_STATE_RUNNING:
+                        _LOGGER.warning("External engine became unreachable")
+                        self._set_state(ENGINE_STATE_ERROR)
         except asyncio.CancelledError:
             return
 

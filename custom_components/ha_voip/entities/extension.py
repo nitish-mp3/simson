@@ -61,7 +61,7 @@ class VoipExtensionDevice(CoordinatorEntity[VoipDataUpdateCoordinator]):
             name=f"VoIP Extension {self._extension_number} ({self._display_name})",
             manufacturer=MANUFACTURER,
             model=MODEL_EXTENSION,
-            sw_version="1.0.2",
+            sw_version="1.1.0",
             via_device=(DOMAIN, self._config_entry.entry_id),
         )
 

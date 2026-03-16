@@ -1,6 +1,6 @@
 """Data update coordinator for HA VoIP integration.
 
-Polls the voip-engine for status and metrics via gRPC, caches active calls,
+Polls the voip-engine for status via HTTP health endpoints, caches active calls,
 registrations, and presence data, and pushes updates to entities.
 """
 
@@ -111,120 +111,187 @@ class VoipData:
 
 
 # ---------------------------------------------------------------------------
-# gRPC client helper (thin wrapper)
+# Engine HTTP client
 # ---------------------------------------------------------------------------
 
 
-class GrpcClient:
-    """Lightweight async wrapper around the voip-engine gRPC channel.
+class EngineClient:
+    """Async HTTP client for communicating with the voip-engine.
 
-    The real proto stubs would be generated from ``voip_engine.proto``. Here
-    we code against the expected RPC surface and fall back gracefully when
-    the generated stubs are not yet available.
+    Uses the engine's HTTP health/metrics endpoints (port 8080) for status
+    monitoring and REST-style endpoints for call-control and data queries.
     """
+
+    HTTP_PORT = 8080
 
     def __init__(self, host: str, port: int) -> None:
         self._host = host
         self._port = port
-        self._channel: Any | None = None
-        self._stub: Any | None = None
         self._connected = False
+        self._session: Any | None = None
+        self._last_health: dict[str, Any] = {}
 
     # -- lifecycle -----------------------------------------------------------
 
-    async def connect(self) -> None:
-        """Verify engine is reachable via its HTTP health endpoint (port 8080)."""
+    async def _get_session(self) -> Any:
+        """Return a reusable aiohttp session."""
         import aiohttp  # type: ignore[import-untyped]
 
-        # Try the configured host first, then 127.0.0.1 as a fallback
-        # (127.0.0.1 works when HA and the add-on share the host network namespace)
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=5.0)
+            )
+        return self._session
+
+    def _url(self, path: str) -> str:
+        """Build an engine HTTP URL."""
+        return f"http://{self._host}:{self.HTTP_PORT}{path}"
+
+    async def connect(self) -> None:
+        """Verify engine is reachable via its HTTP health endpoint."""
+        session = await self._get_session()
+
         candidates = [self._host]
         if "127.0.0.1" not in candidates:
             candidates.append("127.0.0.1")
 
         for candidate in candidates:
-            url = f"http://{candidate}:8080/health/live"
+            url = f"http://{candidate}:{self.HTTP_PORT}/health/live"
             try:
-                async with aiohttp.ClientSession(
-                    timeout=aiohttp.ClientTimeout(total=5.0)
-                ) as session:
-                    async with session.get(url) as resp:
-                        if resp.status == 200:
-                            self._host = candidate  # lock onto working host
-                            self._connected = True
-                            _LOGGER.info("Connected to voip-engine at %s", url)
-                            return
+                async with session.get(url) as resp:
+                    if resp.status == 200:
+                        self._host = candidate
+                        self._connected = True
+                        try:
+                            self._last_health = await resp.json(
+                                content_type=None
+                            )
+                        except Exception:  # noqa: BLE001
+                            self._last_health = {}
+                        _LOGGER.info("Connected to voip-engine at %s", url)
+                        return
             except Exception:  # noqa: BLE001
                 continue
 
         _LOGGER.warning(
-            "Cannot reach voip-engine health endpoint on any candidate host: %s",
+            "Cannot reach voip-engine health endpoint on any candidate: %s",
             candidates,
         )
         self._connected = False
 
     async def disconnect(self) -> None:
-        """Mark the connection as closed."""
-        self._channel = None
+        """Clean up the HTTP session."""
+        if self._session and not self._session.closed:
+            await self._session.close()
+        self._session = None
         self._connected = False
 
     @property
     def connected(self) -> bool:
-        """Return True when the channel appears healthy."""
+        """Return True when the engine appears healthy."""
         return self._connected
 
-    # -- RPC wrappers --------------------------------------------------------
+    # -- HTTP helpers --------------------------------------------------------
+
+    async def _get_json(self, path: str) -> dict[str, Any] | None:
+        """GET a JSON endpoint; return parsed dict or None on failure."""
+        session = await self._get_session()
+        try:
+            async with session.get(self._url(path)) as resp:
+                if resp.status == 200:
+                    self._connected = True
+                    return await resp.json(content_type=None)
+                _LOGGER.debug("Engine %s returned HTTP %s", path, resp.status)
+                return None
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("Engine %s failed: %s", path, exc)
+            return None
+
+    async def _post_json(
+        self, path: str, payload: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """POST JSON to an engine endpoint; return parsed response or None."""
+        session = await self._get_session()
+        try:
+            async with session.post(
+                self._url(path), json=payload
+            ) as resp:
+                if resp.status in (200, 201):
+                    self._connected = True
+                    return await resp.json(content_type=None)
+                _LOGGER.debug(
+                    "Engine POST %s returned HTTP %s", path, resp.status
+                )
+                return None
+        except Exception as exc:  # noqa: BLE001
+            _LOGGER.debug("Engine POST %s failed: %s", path, exc)
+            return None
+
+    # -- Status / health -----------------------------------------------------
 
     async def get_status(self) -> dict[str, Any]:
-        """Return engine status via HTTP health check."""
-        import aiohttp  # type: ignore[import-untyped]
-
-        url = f"http://{self._host}:8080/health/ready"
+        """Return engine status from /health/ready."""
+        session = await self._get_session()
+        url = self._url("/health/ready")
         try:
-            async with aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=5.0)
-            ) as session:
-                async with session.get(url) as resp:
-                    if resp.status == 200:
-                        self._connected = True
-                        return {"state": ENGINE_STATE_RUNNING}
-                    self._connected = False
-                    raise ConnectionError(
-                        f"Engine health check returned HTTP {resp.status}"
-                    )
+            async with session.get(url) as resp:
+                if resp.status == 200:
+                    self._connected = True
+                    data = await resp.json(content_type=None)
+                    self._last_health = data or {}
+                    return {
+                        "state": ENGINE_STATE_RUNNING,
+                        "version": (data or {}).get("version", ""),
+                        "uptime_seconds": (data or {}).get(
+                            "uptime_seconds", 0
+                        ),
+                    }
+                self._connected = False
+                raise ConnectionError(
+                    f"Engine health check returned HTTP {resp.status}"
+                )
         except ConnectionError:
             raise
         except Exception as exc:  # noqa: BLE001
             self._connected = False
-            raise ConnectionError(f"GetStatus failed: {exc}") from exc
+            raise ConnectionError(f"Health check failed: {exc}") from exc
+
+    # -- Call queries --------------------------------------------------------
 
     async def get_calls(self) -> list[dict[str, Any]]:
-        """Call ListActiveCalls RPC."""
+        """Fetch active calls from the engine."""
         if not self._connected:
             return []
-        try:
-            # Placeholder -- returns empty until proto stubs wired up
+        data = await self._get_json("/api/calls")
+        if data is None:
             return []
-        except Exception:  # noqa: BLE001
-            return []
+        if isinstance(data, list):
+            return data
+        return data.get("calls", [])
 
     async def get_extensions(self) -> list[dict[str, Any]]:
-        """Call ListRegistrations RPC."""
+        """Fetch registered extensions from the engine."""
         if not self._connected:
             return []
-        try:
+        data = await self._get_json("/api/extensions")
+        if data is None:
             return []
-        except Exception:  # noqa: BLE001
-            return []
+        if isinstance(data, list):
+            return data
+        return data.get("extensions", [])
 
     async def get_call_history(self, limit: int = 50) -> list[dict[str, Any]]:
-        """Call GetCallHistory RPC."""
+        """Fetch call history from the engine."""
         if not self._connected:
             return []
-        try:
+        data = await self._get_json(f"/api/call-history?limit={limit}")
+        if data is None:
             return []
-        except Exception:  # noqa: BLE001
-            return []
+        if isinstance(data, list):
+            return data
+        return data.get("calls", data.get("history", []))
+
+    # -- Call control --------------------------------------------------------
 
     async def make_call(
         self,
@@ -232,49 +299,82 @@ class GrpcClient:
         from_extension: str,
         caller_id: str = "",
     ) -> dict[str, Any]:
-        """Call MakeCall RPC."""
+        """Initiate a call via the engine."""
         if not self._connected:
-            raise ConnectionError("gRPC channel is not connected")
-        # Placeholder
-        return {"call_id": "", "status": "initiated"}
+            raise ConnectionError("Engine is not connected")
+        result = await self._post_json(
+            "/api/calls",
+            {
+                "from_extension": from_extension,
+                "to_extension": target,
+                "caller_id": caller_id,
+            },
+        )
+        if result is None:
+            raise ConnectionError("Engine did not accept the call request")
+        return {
+            "call_id": result.get("call_id", ""),
+            "status": result.get("status", "initiated"),
+        }
 
     async def hangup_call(self, call_id: str) -> bool:
-        """Call HangupCall RPC."""
+        """Hang up a call."""
         if not self._connected:
             return False
-        return True
+        result = await self._post_json(
+            f"/api/calls/{call_id}/hangup", {"call_id": call_id}
+        )
+        return result is not None
 
     async def transfer_call(self, call_id: str, target: str) -> bool:
-        """Call TransferCall RPC."""
+        """Transfer a call to another extension."""
         if not self._connected:
             return False
-        return True
+        result = await self._post_json(
+            f"/api/calls/{call_id}/transfer",
+            {"call_id": call_id, "to_extension": target},
+        )
+        return result is not None
 
     async def toggle_recording(self, call_id: str) -> bool:
-        """Call ToggleRecording RPC."""
+        """Toggle call recording."""
         if not self._connected:
             return False
-        return True
+        result = await self._post_json(
+            f"/api/calls/{call_id}/recording", {"call_id": call_id}
+        )
+        return result is not None
 
     async def toggle_mute(self, call_id: str) -> bool:
-        """Call ToggleMute RPC."""
+        """Toggle call mute."""
         if not self._connected:
             return False
-        return True
+        result = await self._post_json(
+            f"/api/calls/{call_id}/mute", {"call_id": call_id}
+        )
+        return result is not None
 
     async def send_dtmf(self, call_id: str, digits: str) -> bool:
-        """Call SendDTMF RPC."""
+        """Send DTMF tones on a call."""
         if not self._connected:
             return False
-        return True
+        result = await self._post_json(
+            f"/api/calls/{call_id}/dtmf",
+            {"call_id": call_id, "digits": digits},
+        )
+        return result is not None
 
     async def relay_sdp(
         self, call_id: str, sdp: str, sdp_type: str
     ) -> dict[str, Any]:
         """Relay an SDP offer/answer to the engine."""
         if not self._connected:
-            raise ConnectionError("gRPC channel is not connected")
-        return {}
+            raise ConnectionError("Engine is not connected")
+        result = await self._post_json(
+            "/api/webrtc/sdp",
+            {"call_id": call_id, "sdp": sdp, "sdp_type": sdp_type},
+        )
+        return result or {}
 
     async def relay_ice_candidate(
         self, call_id: str, candidate: str, sdp_mid: str, sdp_mline_index: int
@@ -282,7 +382,16 @@ class GrpcClient:
         """Relay an ICE candidate to the engine."""
         if not self._connected:
             return False
-        return True
+        result = await self._post_json(
+            "/api/webrtc/ice",
+            {
+                "call_id": call_id,
+                "candidate": candidate,
+                "sdp_mid": sdp_mid,
+                "sdp_mline_index": sdp_mline_index,
+            },
+        )
+        return result is not None
 
 
 # ---------------------------------------------------------------------------
@@ -320,19 +429,21 @@ class VoipDataUpdateCoordinator(DataUpdateCoordinator[VoipData]):
         if not host or host in ("", "0.0.0.0"):
             host = DEFAULT_ENGINE_HOST
         port = config_entry.data.get(CONF_GRPC_PORT, DEFAULT_GRPC_PORT)
-        self.grpc_client = GrpcClient(host, port)
+        self.engine_client = EngineClient(host, port)
+        # Backward-compatible alias so websocket_api.py / services.py still work
+        self.grpc_client = self.engine_client
         self._event_task: asyncio.Task[None] | None = None
         self._previous_engine_state: str = ENGINE_STATE_STOPPED
 
     # -- Public helpers -------------------------------------------------------
 
     async def async_connect(self) -> None:
-        """Open the gRPC connection and start the event stream."""
-        await self.grpc_client.connect()
+        """Open the health-check connection and start the event stream."""
+        await self.engine_client.connect()
         self._start_event_stream()
 
     async def async_disconnect(self) -> None:
-        """Tear down gRPC connection and background tasks."""
+        """Tear down connection and background tasks."""
         if self._event_task is not None:
             self._event_task.cancel()
             try:
@@ -340,7 +451,7 @@ class VoipDataUpdateCoordinator(DataUpdateCoordinator[VoipData]):
             except asyncio.CancelledError:
                 pass
             self._event_task = None
-        await self.grpc_client.disconnect()
+        await self.engine_client.disconnect()
 
     # -- DataUpdateCoordinator override ---------------------------------------
 
@@ -350,7 +461,7 @@ class VoipDataUpdateCoordinator(DataUpdateCoordinator[VoipData]):
 
         # Engine status
         try:
-            raw_status = await self.grpc_client.get_status()
+            raw_status = await self.engine_client.get_status()
             data.engine = EngineStatus(
                 state=raw_status.get("state", ENGINE_STATE_STOPPED),
                 uptime_seconds=raw_status.get("uptime_seconds", 0),
@@ -365,7 +476,7 @@ class VoipDataUpdateCoordinator(DataUpdateCoordinator[VoipData]):
             )
         except ConnectionError:
             data.engine = EngineStatus(state=ENGINE_STATE_ERROR)
-            raise UpdateFailed("Cannot reach voip-engine via gRPC") from None
+            raise UpdateFailed("Cannot reach voip-engine health endpoint") from None
 
         # Fire an event when engine state transitions
         if data.engine.state != self._previous_engine_state:
@@ -380,7 +491,7 @@ class VoipDataUpdateCoordinator(DataUpdateCoordinator[VoipData]):
 
         # Active calls
         try:
-            raw_calls = await self.grpc_client.get_calls()
+            raw_calls = await self.engine_client.get_calls()
             for rc in raw_calls:
                 info = CallInfo(
                     call_id=rc.get("call_id", ""),
@@ -403,7 +514,7 @@ class VoipDataUpdateCoordinator(DataUpdateCoordinator[VoipData]):
 
         # Registrations
         try:
-            raw_exts = await self.grpc_client.get_extensions()
+            raw_exts = await self.engine_client.get_extensions()
             for re_ in raw_exts:
                 ext = ExtensionInfo(
                     number=re_.get("number", ""),
@@ -419,13 +530,13 @@ class VoipDataUpdateCoordinator(DataUpdateCoordinator[VoipData]):
 
         # Call history
         try:
-            data.call_history = await self.grpc_client.get_call_history()
+            data.call_history = await self.engine_client.get_call_history()
         except Exception as exc:  # noqa: BLE001
             _LOGGER.debug("Failed to fetch call history: %s", exc)
 
         return data
 
-    # -- Event stream (gRPC server-streaming) ---------------------------------
+    # -- Event stream ---------------------------------------------------------
 
     def _start_event_stream(self) -> None:
         """Start a background task that listens to the engine event stream."""
@@ -436,22 +547,20 @@ class VoipDataUpdateCoordinator(DataUpdateCoordinator[VoipData]):
         )
 
     async def _listen_events(self) -> None:
-        """Long-running coroutine that consumes engine events via gRPC streaming."""
+        """Long-running coroutine that monitors engine connectivity."""
         _LOGGER.debug("Event stream listener started")
         reconnect_delay = 2.0
         max_reconnect_delay = 60.0
 
         while True:
             try:
-                if not self.grpc_client.connected:
-                    await self.grpc_client.connect()
+                if not self.engine_client.connected:
+                    await self.engine_client.connect()
+                    reconnect_delay = 2.0
 
-                # In production this would call a streaming RPC:
-                #   async for event in self._stub.StreamEvents(request):
-                #       self._dispatch_event(event)
-                # For now we just sleep and let the poll cycle handle updates.
-                await asyncio.sleep(UPDATE_INTERVAL_SECONDS)
-                reconnect_delay = 2.0  # reset on success
+                # In production this would consume a streaming RPC.
+                # For now we just sleep — the poll cycle handles updates.
+                await asyncio.sleep(max_reconnect_delay)
 
             except asyncio.CancelledError:
                 _LOGGER.debug("Event stream listener cancelled")

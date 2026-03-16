@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VoIP Phone</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:          #111827;
+      --surface:     #1f2937;
+      --surface2:    #374151;
+      --border:      #374151;
+      --accent:      #6366f1;
+      --green:       #22c55e;
+      --red:         #ef4444;
+      --yellow:      #eab308;
+      --text:        #f9fafb;
+      --text-dim:    #9ca3af;
+      --radius:      12px;
+      --radius-sm:   8px;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+
+    .phone-container {
+      width: 100%;
+      max-width: 400px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 16px;
+      background: var(--surface);
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+    }
+    .header-title { font-size: 18px; font-weight: 700; }
+    .status-badge { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-dim); }
+    .status-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--text-dim); transition: background 0.3s;
+    }
+    .status-dot.registered { background: var(--green); }
+    .status-dot.ringing    { background: var(--yellow); animation: pulse 1s infinite; }
+    .status-dot.in-call    { background: var(--accent); }
+    .status-dot.error      { background: var(--red); }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+    .config-panel { background: var(--surface); border-radius: var(--radius); border: 1px solid var(--border); overflow: hidden; }
+    .config-toggle {
+      width: 100%; padding: 12px 16px; background: transparent; border: none;
+      color: var(--text); font-size: 14px; font-weight: 600; cursor: pointer;
+      text-align: left; display: flex; align-items: center; justify-content: space-between;
+    }
+    .config-toggle:hover { background: var(--surface2); }
+    .config-body { padding: 0 16px 16px; display: flex; flex-direction: column; gap: 10px; }
+    .config-body.hidden { display: none; }
+
+    label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text-dim); }
+    input {
+      padding: 8px 12px; background: var(--surface2); border: 1px solid var(--border);
+      border-radius: var(--radius-sm); color: var(--text); font-size: 14px; outline: none;
+      transition: border-color .2s;
+    }
+    input:focus { border-color: var(--accent); }
+    .row { display: flex; gap: 8px; }
+    .row label { flex: 1; }
+
+    .call-display {
+      background: var(--surface); border-radius: var(--radius); border: 1px solid var(--border);
+      padding: 20px 16px; text-align: center; min-height: 96px;
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+    }
+    .call-number  { font-size: 28px; font-weight: 700; letter-spacing: 2px; min-height: 36px; }
+    .call-status  { font-size: 13px; color: var(--text-dim); }
+    .call-timer   { font-size: 13px; color: var(--green); font-variant-numeric: tabular-nums; }
+
+    .dialpad { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; }
+    .key {
+      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-sm);
+      padding: 14px 8px; text-align: center; cursor: pointer; user-select: none;
+      transition: background .15s, transform .1s;
+      display: flex; flex-direction: column; align-items: center; gap: 2px;
+    }
+    .key:hover  { background: var(--surface2); }
+    .key:active { transform: scale(.94); }
+    .key-digit   { font-size: 22px; font-weight: 700; }
+    .key-letters { font-size: 9px; color: var(--text-dim); letter-spacing: 1.5px; }
+
+    .actions { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; }
+    .btn {
+      padding: 14px; border-radius: var(--radius-sm); border: none;
+      font-size: 13px; font-weight: 600; cursor: pointer;
+      display: flex; flex-direction: column; align-items: center; gap: 4px;
+      transition: filter .15s, transform .1s;
+    }
+    .btn:hover    { filter: brightness(1.15); }
+    .btn:active   { transform: scale(.95); }
+    .btn:disabled { opacity: .4; cursor: not-allowed; transform: none; filter: none; }
+    .btn svg      { width: 22px; height: 22px; }
+    .btn-call     { background: var(--green);    color: #fff; }
+    .btn-hangup   { background: var(--red);      color: #fff; }
+    .btn-answer   { background: var(--green);    color: #fff; }
+    .btn-neutral  { background: var(--surface2); color: var(--text); }
+    .btn-reg      { background: var(--accent);   color: #fff; }
+    .btn.active   { background: var(--yellow);   color: #000; }
+
+    .history { background: var(--surface); border-radius: var(--radius); border: 1px solid var(--border); overflow: hidden; }
+    .history-header { padding: 12px 16px; font-size: 14px; font-weight: 600; color: var(--text-dim); border-bottom: 1px solid var(--border); }
+    .history-empty  { padding: 16px; text-align: center; color: var(--text-dim); font-size: 13px; }
+    .history-item {
+      display: flex; align-items: center; gap: 12px; padding: 10px 16px;
+      border-bottom: 1px solid var(--border); cursor: pointer; transition: background .15s;
+    }
+    .history-item:last-child { border-bottom: none; }
+    .history-item:hover { background: var(--surface2); }
+    .history-icon { font-size: 18px; width: 24px; text-align: center; flex-shrink: 0; }
+    .history-info { flex: 1; min-width: 0; }
+    .history-num  { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .history-meta { font-size: 12px; color: var(--text-dim); }
+
+    .incoming-panel {
+      background: var(--surface); border-radius: var(--radius); border: 2px solid var(--yellow);
+      padding: 20px; text-align: center;
+    }
+    .incoming-title  { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+    .incoming-caller { font-size: 28px; font-weight: 700; color: var(--yellow); margin: 12px 0; }
+    .incoming-btns   { display: flex; gap: 12px; justify-content: center; margin-top: 16px; }
+    .incoming-btns .btn { flex: 1; flex-direction: row; justify-content: center; gap: 8px; }
+
+    #toast {
+      position: fixed; bottom: 24px; left: 50%;
+      transform: translateX(-50%) translateY(60px);
+      background: var(--surface2); color: var(--text); border: 1px solid var(--border);
+      border-radius: var(--radius-sm); padding: 10px 20px; font-size: 14px;
+      transition: transform .3s; pointer-events: none; z-index: 999; white-space: nowrap;
+    }
+    #toast.show  { transform: translateX(-50%) translateY(0); }
+    #toast.error { border-color: var(--red); color: var(--red); }
+  </style>
+</head>
+<body>
+<div class="phone-container">
+
+  <!-- Header -->
+  <div class="header">
+    <span class="header-title">VoIP Phone</span>
+    <div class="status-badge">
+      <div class="status-dot" id="statusDot"></div>
+      <span id="statusText">Offline</span>
+    </div>
+  </div>
+
+  <!-- Config -->
+  <div class="config-panel">
+    <button class="config-toggle" onclick="toggleConfig()">
+      <span>SIP Configuration</span>
+      <span id="configArrow">▼</span>
+    </button>
+    <div class="config-body" id="configBody">
+      <label>SIP WebSocket Server (host:port)
+        <input id="sipServer" type="text" placeholder="192.168.1.100:8086" />
+      </label>
+      <div class="row">
+        <label>Extension / Username
+          <input id="sipUser" type="text" placeholder="1001" />
+        </label>
+        <label>Password
+          <input id="sipPass" type="password" placeholder="••••••••" />
+        </label>
+      </div>
+      <label>Display Name
+        <input id="sipName" type="text" placeholder="My Phone" />
+      </label>
+      <button class="btn btn-reg" id="regBtn"
+              style="width:100%;flex-direction:row;justify-content:center;gap:8px;"
+              onclick="toggleRegister()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M5 12h14M12 5l7 7-7 7"/>
+        </svg>
+        Register
+      </button>
+    </div>
+  </div>
+
+  <!-- Call display -->
+  <div class="call-display">
+    <div class="call-number" id="callDisplay">&#8203;</div>
+    <div class="call-status" id="callStatus">Enter a number to dial</div>
+    <div class="call-timer" id="callTimer" style="display:none"></div>
+  </div>
+
+  <!-- Dialpad -->
+  <div class="dialpad">
+    <div class="key" onclick="pressKey('1')"><span class="key-digit">1</span><span class="key-letters">&nbsp;</span></div>
+    <div class="key" onclick="pressKey('2')"><span class="key-digit">2</span><span class="key-letters">ABC</span></div>
+    <div class="key" onclick="pressKey('3')"><span class="key-digit">3</span><span class="key-letters">DEF</span></div>
+    <div class="key" onclick="pressKey('4')"><span class="key-digit">4</span><span class="key-letters">GHI</span></div>
+    <div class="key" onclick="pressKey('5')"><span class="key-digit">5</span><span class="key-letters">JKL</span></div>
+    <div class="key" onclick="pressKey('6')"><span class="key-digit">6</span><span class="key-letters">MNO</span></div>
+    <div class="key" onclick="pressKey('7')"><span class="key-digit">7</span><span class="key-letters">PQRS</span></div>
+    <div class="key" onclick="pressKey('8')"><span class="key-digit">8</span><span class="key-letters">TUV</span></div>
+    <div class="key" onclick="pressKey('9')"><span class="key-digit">9</span><span class="key-letters">WXYZ</span></div>
+    <div class="key" onclick="pressKey('*')"><span class="key-digit">*</span><span class="key-letters">&nbsp;</span></div>
+    <div class="key" onclick="pressKey('0')"><span class="key-digit">0</span><span class="key-letters">+</span></div>
+    <div class="key" onclick="pressKey('#')"><span class="key-digit">#</span><span class="key-letters">&nbsp;</span></div>
+  </div>
+
+  <!-- Idle actions -->
+  <div class="actions" id="actionsIdle">
+    <button class="btn btn-neutral" onclick="backspace()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M21 6H8l-7 6 7 6h13V6z"/><line x1="18" y1="9" x2="12" y2="15"/><line x1="12" y1="9" x2="18" y2="15"/>
+      </svg>
+      Del
+    </button>
+    <button class="btn btn-call" onclick="makeCall()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13.6 19.79 19.79 0 0 1 1.61 5.05C1.59 4.03 2.3 3.12 3.31 3H6.3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.09 11.1a16 16 0 0 0 5.91 5.91l1.46-1.46a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>
+      </svg>
+      Call
+    </button>
+    <div></div>
+  </div>
+
+  <!-- Incoming call -->
+  <div class="incoming-panel" id="incomingPanel" style="display:none;">
+    <div class="incoming-title">Incoming Call</div>
+    <div class="incoming-caller" id="incomingCaller"></div>
+    <div class="incoming-btns">
+      <button class="btn btn-answer" onclick="answerCall()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 13.6 19.79 19.79 0 0 1 1.61 5.05C1.59 4.03 2.3 3.12 3.31 3H6.3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.09 11.1a16 16 0 0 0 5.91 5.91l1.46-1.46a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/>
+        </svg>
+        Answer
+      </button>
+      <button class="btn btn-hangup" onclick="rejectCall()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="1" y1="1" x2="23" y2="23"/>
+          <path d="M16.5 16.5C15 17.5 12.5 19 12 19c-1 0-5-3-7-5-2-2-4.5-5.5-4.5-7C.5 6 2 3.5 3 2.5l4 4-1.5 1.5s1 2.5 4 4.5L11 11l.5.5c2 1.5 4.5 3 4.5 3l1.5-1.5 4 4z"/>
+        </svg>
+        Reject
+      </button>
+    </div>
+  </div>
+
+  <!-- In-call controls -->
+  <div class="actions" id="inCallPanel" style="display:none;">
+    <button class="btn btn-neutral" id="muteBtn" onclick="toggleMute()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+        <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+        <line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>
+      </svg>
+      Mute
+    </button>
+    <button class="btn btn-hangup" onclick="hangup()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <line x1="1" y1="1" x2="23" y2="23"/>
+        <path d="M16.5 16.5C15 17.5 12.5 19 12 19c-1 0-5-3-7-5-2-2-4.5-5.5-4.5-7C.5 6 2 3.5 3 2.5l4 4-1.5 1.5s1 2.5 4 4.5L11 11l.5.5c2 1.5 4.5 3 4.5 3l1.5-1.5 4 4z"/>
+      </svg>
+      Hang Up
+    </button>
+    <button class="btn btn-neutral" id="holdBtn" onclick="toggleHold()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>
+      </svg>
+      Hold
+    </button>
+  </div>
+
+  <!-- History -->
+  <div class="history">
+    <div class="history-header">Recent Calls</div>
+    <div class="history-empty" id="historyEmpty">No recent calls</div>
+    <div id="historyList"></div>
+  </div>
+
+</div>
+
+<audio id="remoteAudio" autoplay playsinline></audio>
+<div id="toast"></div>
+
+<script>
+const JSSIP = '/ha_voip/jssip.min.js';
+const CFG_KEY = 'ha_voip_cfg';
+const HIS_KEY = 'ha_voip_history';
+const MAX_HISTORY = 50;
+
+let ua = null, session = null;
+let callStart = null, timerIv = null;
+let muted = false, held = false;
+let dial = '';
+let history = [];
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+loadConfig();
+renderHistory();
+loadScript(JSSIP)
+  .then(() => showToast('Ready — configure SIP above'))
+  .catch(() => showToast('Failed to load SIP library', true));
+
+function loadScript(src) {
+  if (window.JsSIP) return Promise.resolve();
+  return new Promise((ok, fail) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = ok;
+    s.onerror = () => fail(new Error('Cannot load ' + src));
+    document.head.appendChild(s);
+  });
+}
+
+// ── Persistence ───────────────────────────────────────────────────────────────
+function loadConfig() {
+  try {
+    const c = JSON.parse(localStorage.getItem(CFG_KEY) || '{}');
+    document.getElementById('sipServer').value = c.server || '';
+    document.getElementById('sipUser').value   = c.user   || '';
+    document.getElementById('sipPass').value   = c.pass   || '';
+    document.getElementById('sipName').value   = c.name   || '';
+  } catch (_) {}
+}
+function saveConfig() {
+  try {
+    localStorage.setItem(CFG_KEY, JSON.stringify({
+      server: v('sipServer'), user: v('sipUser'), pass: v('sipPass'), name: v('sipName')
+    }));
+  } catch (_) {}
+}
+function v(id) { return document.getElementById(id).value.trim(); }
+
+// ── Config panel ──────────────────────────────────────────────────────────────
+function toggleConfig() {
+  const b = document.getElementById('configBody');
+  const a = document.getElementById('configArrow');
+  const open = !b.classList.contains('hidden');
+  b.classList.toggle('hidden', open);
+  a.textContent = open ? '▶' : '▼';
+}
+
+// ── Registration ──────────────────────────────────────────────────────────────
+function toggleRegister() {
+  if (ua && ua.isRegistered()) {
+    ua.unregister(); ua.stop(); ua = null;
+    setStatus('', 'Offline');
+    document.getElementById('regBtn').textContent = 'Register';
+    return;
+  }
+  if (!window.JsSIP) { showToast('SIP library not loaded', true); return; }
+
+  const server = v('sipServer'), user = v('sipUser');
+  const pass   = document.getElementById('sipPass').value;
+  const name   = v('sipName') || user;
+
+  if (!server || !user) { showToast('Enter SIP server and extension', true); return; }
+  saveConfig();
+
+  const proto  = location.protocol === 'https:' ? 'wss' : 'ws';
+  const wsUrl  = /^wss?:\/\//.test(server) ? server : `${proto}://${server}`;
+  const domain = wsUrl.replace(/^wss?:\/\//, '').split('/')[0].split(':')[0];
+
+  try {
+    ua = new JsSIP.UA({
+      sockets: [new JsSIP.WebSocketInterface(wsUrl)],
+      uri: `sip:${user}@${domain}`,
+      password: pass,
+      display_name: name,
+      register: true,
+    });
+  } catch (e) { showToast('Config error: ' + e.message, true); return; }
+
+  ua.on('connecting',   () => setStatus('ringing', 'Connecting…'));
+  ua.on('connected',    () => setStatus('ringing', 'Connected'));
+  ua.on('disconnected', () => { setStatus('error', 'Disconnected'); showToast('Lost connection to SIP server', true); });
+  ua.on('registered',   () => {
+    setStatus('registered', 'Registered');
+    document.getElementById('regBtn').textContent = 'Unregister';
+    document.getElementById('configBody').classList.add('hidden');
+    document.getElementById('configArrow').textContent = '▶';
+    showToast('Registered as ' + user + '@' + domain);
+  });
+  ua.on('unregistered',        () => { setStatus('', 'Offline'); document.getElementById('regBtn').textContent = 'Register'; });
+  ua.on('registrationFailed', (e) => { setStatus('error', 'Reg failed'); showToast('Registration failed: ' + (e.cause || 'unknown'), true); });
+  ua.on('newRTCSession',       (d) => { if (d.originator === 'remote') handleIncoming(d.session); });
+
+  ua.start();
+}
+
+// ── Incoming ──────────────────────────────────────────────────────────────────
+function handleIncoming(s) {
+  if (session) { s.terminate({ status_code: 486, reason_phrase: 'Busy Here' }); return; }
+  session = s;
+  const caller = s.remote_identity.uri.user || s.remote_identity.display_name || 'Unknown';
+  document.getElementById('incomingCaller').textContent = caller;
+  show('incomingPanel'); hide('actionsIdle');
+  setDisplay(caller); setCallStatus('Incoming call from ' + caller);
+  setStatus('ringing', 'Incoming…');
+  bindSession(s);
+}
+function answerCall() {
+  if (!session) return;
+  hide('incomingPanel');
+  session.answer({ mediaConstraints: { audio: true, video: false } });
+}
+function rejectCall() {
+  if (!session) return;
+  try { session.terminate({ status_code: 486, reason_phrase: 'Busy Here' }); } catch (_) {}
+  hide('incomingPanel'); show('actionsIdle');
+  resetUI('Rejected');
+}
+
+// ── Outgoing ──────────────────────────────────────────────────────────────────
+function makeCall() {
+  if (!ua || !ua.isRegistered()) { showToast('Not registered', true); return; }
+  if (session) { showToast('Already in a call', true); return; }
+  if (!dial)   { showToast('Enter a number to dial', true); return; }
+
+  const domain = v('sipServer').replace(/^wss?:\/\//, '').split('/')[0].split(':')[0];
+  session = ua.call(`sip:${dial}@${domain}`, {
+    mediaConstraints: { audio: true, video: false },
+  });
+  setStatus('ringing', 'Calling…'); setCallStatus('Calling ' + dial + '…');
+  show('inCallPanel'); hide('actionsIdle');
+  bindSession(session);
+}
+
+// ── Session binding ───────────────────────────────────────────────────────────
+function bindSession(s) {
+  s.on('peerconnection', ({ peerconnection: pc }) => {
+    pc.ontrack = (e) => {
+      const el = document.getElementById('remoteAudio');
+      el.srcObject = e.streams[0] ?? new MediaStream(e.streams.flatMap(x => x.getTracks()));
+    };
+  });
+  s.on('confirmed', () => {
+    hide('incomingPanel'); show('inCallPanel'); hide('actionsIdle');
+    setStatus('in-call', 'In call'); setCallStatus('In call'); startTimer();
+    const num = s.remote_identity.uri.user || 'Unknown';
+    setDisplay(num); addHistory(num, 'answered');
+  });
+  s.on('ended',  (e) => { endCall('Ended'); showToast('Call ended' + (e.cause ? ' (' + e.cause + ')' : '')); });
+  s.on('failed', (e) => { endCall('Failed'); showToast('Call failed: ' + (e.cause || 'unknown'), true); });
+}
+
+function hangup() {
+  if (!session) return;
+  try { session.terminate(); } catch (_) {}
+}
+
+function endCall(reason) {
+  stopTimer(); session = null; muted = false; held = false;
+  hide('inCallPanel'); hide('incomingPanel'); show('actionsIdle');
+  document.getElementById('remoteAudio').srcObject = null;
+  const reg = ua && ua.isRegistered();
+  setStatus(reg ? 'registered' : '', reg ? 'Registered' : 'Offline');
+  resetUI(reason);
+  updateMuteBtn(); updateHoldBtn();
+}
+
+// ── Mute / Hold ───────────────────────────────────────────────────────────────
+function toggleMute() {
+  if (!session) return;
+  muted ? session.unmute({ audio: true }) : session.mute({ audio: true });
+  muted = !muted; updateMuteBtn();
+}
+function toggleHold() {
+  if (!session) return;
+  held ? session.unhold() : session.hold();
+  held = !held; updateHoldBtn();
+  setCallStatus(held ? 'On hold' : 'In call');
+}
+function updateMuteBtn() {
+  const b = document.getElementById('muteBtn');
+  b.classList.toggle('active', muted);
+  b.querySelector('span') && (b.querySelector('span').textContent = muted ? 'Unmute' : 'Mute');
+}
+function updateHoldBtn() {
+  const b = document.getElementById('holdBtn');
+  b.classList.toggle('active', held);
+  b.querySelector('span') && (b.querySelector('span').textContent = held ? 'Unhold' : 'Hold');
+}
+
+// ── Dialpad ───────────────────────────────────────────────────────────────────
+function pressKey(k) {
+  if (session) { try { session.sendDTMF(k); } catch (_) {} return; }
+  if (dial.length >= 20) return;
+  dial += k; setDisplay(dial);
+}
+function backspace() {
+  if (!dial) return;
+  dial = dial.slice(0, -1);
+  setDisplay(dial); if (!dial) setCallStatus('Enter a number to dial');
+}
+
+// ── Timer ─────────────────────────────────────────────────────────────────────
+function startTimer() {
+  callStart = Date.now();
+  const el = document.getElementById('callTimer');
+  el.style.display = 'block';
+  timerIv = setInterval(() => {
+    const s = Math.floor((Date.now() - callStart) / 1000);
+    el.textContent = `${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;
+  }, 1000);
+}
+function stopTimer() {
+  clearInterval(timerIv); timerIv = null;
+  document.getElementById('callTimer').style.display = 'none';
+}
+
+// ── History ───────────────────────────────────────────────────────────────────
+function addHistory(num, type) {
+  history.unshift({ num, type, ts: Date.now() });
+  if (history.length > MAX_HISTORY) history.pop();
+  try { localStorage.setItem(HIS_KEY, JSON.stringify(history)); } catch (_) {}
+  renderHistory();
+}
+function renderHistory() {
+  try { history = JSON.parse(localStorage.getItem(HIS_KEY) || '[]'); } catch (_) {}
+  const list = document.getElementById('historyList');
+  const empty = document.getElementById('historyEmpty');
+  if (!history.length) { empty.style.display = 'block'; list.innerHTML = ''; return; }
+  empty.style.display = 'none';
+  const icons  = { answered: '📞', missed: '📵', outgoing: '📤' };
+  const labels = { answered: 'Answered', missed: 'Missed', outgoing: 'Outgoing' };
+  list.innerHTML = history.slice(0, 10).map(e => {
+    const d = new Date(e.ts);
+    return `<div class="history-item" onclick="dialNum('${esc(e.num)}')">
+      <div class="history-icon">${icons[e.type] || '📞'}</div>
+      <div class="history-info">
+        <div class="history-num">${esc(e.num)}</div>
+        <div class="history-meta">${labels[e.type] || e.type} · ${d.toLocaleDateString([],{month:'short',day:'numeric'})} ${d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+function dialNum(n) { dial = n; setDisplay(n); setCallStatus('Press Call to dial'); }
+
+// ── UI Helpers ────────────────────────────────────────────────────────────────
+function setStatus(cls, text) {
+  document.getElementById('statusDot').className = 'status-dot ' + cls;
+  document.getElementById('statusText').textContent = text;
+}
+function setDisplay(num)   { document.getElementById('callDisplay').textContent = num || '\u200b'; }
+function setCallStatus(t)  { document.getElementById('callStatus').textContent = t; }
+function resetUI(reason)   { dial = ''; setDisplay(''); setCallStatus(reason || 'Enter a number to dial'); }
+function show(id)  { document.getElementById(id).style.display = ''; }
+function hide(id)  { document.getElementById(id).style.display = 'none'; }
+function esc(s)    { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+let toastTm = null;
+function showToast(msg, err = false) {
+  const el = document.getElementById('toast');
+  el.textContent = msg; el.className = 'show' + (err ? ' error' : '');
+  clearTimeout(toastTm); toastTm = setTimeout(() => el.className = '', 3500);
+}
+</script>
+</body>
+</html>

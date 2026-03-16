@@ -140,7 +140,6 @@ ENGINE_STATE_RESTARTING: Final = "restarting"
 DATA_COORDINATOR: Final = "coordinator"
 DATA_ENGINE_MANAGER: Final = "engine_manager"
 DATA_UNSUB_LISTENERS: Final = "unsub_listeners"
-DATA_GRPC_CHANNEL: Final = "grpc_channel"
 
 # ---------------------------------------------------------------------------
 # Update intervals

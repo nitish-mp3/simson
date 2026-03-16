@@ -115,6 +115,12 @@ async fn main() -> Result<()> {
     let config = Arc::new(engine_config.clone());
     let voip_metrics = Arc::new(VoipMetrics::new());
 
+    // Shared call-control state — used by both gRPC and REST handlers
+    let service_state = api::ServiceState::new(
+        engine_config.api.api_keys.clone(),
+        engine_config.api.rate_limit_per_sec,
+    );
+
     // Initialize database
     let db_path = match engine_config.database.db_type.as_str() {
         "sqlite" => {
@@ -211,16 +217,12 @@ async fn main() -> Result<()> {
         let addr: SocketAddr = format!("0.0.0.0:{}", config.api.grpc_port)
             .parse()
             .context("Invalid gRPC address")?;
-        let cfg = config.clone();
         let mut shutdown_rx = shutdown_tx.subscribe();
+        let state = service_state.clone();
 
         tokio::spawn(async move {
             info!(%addr, "Starting gRPC API server");
-            let state = api::grpc::ServiceState::new(
-                cfg.api.api_keys.clone(),
-                cfg.api.rate_limit_per_sec,
-            );
-            let service = api::grpc::VoipGrpcService::new(state);
+            let service = api::VoipGrpcService::new(state);
 
             // When generated proto is available, use the tonic service wrapper.
             // Otherwise, just log that gRPC is in stub mode and wait for shutdown.
@@ -249,7 +251,7 @@ async fn main() -> Result<()> {
         })
     };
 
-    // Start HTTP metrics + health server
+    // Start HTTP: health + metrics + REST API server
     let http_handle = {
         let addr: SocketAddr = format!("0.0.0.0:{}", config.api.http_port)
             .parse()
@@ -258,10 +260,11 @@ async fn main() -> Result<()> {
         let db = database.clone();
         let ts = turn_server.clone();
         let cfg = config.clone();
+        let rest_state = service_state.clone();
         let mut shutdown_rx = shutdown_tx.subscribe();
 
         tokio::spawn(async move {
-            info!(%addr, "Starting HTTP metrics/health server");
+            info!(%addr, "Starting HTTP server (health + metrics + REST API)");
 
             let health_checker = Arc::new(HealthChecker::new(db, ts, cfg));
 
@@ -277,7 +280,8 @@ async fn main() -> Result<()> {
                 .route("/health/ready", axum::routing::get({
                     let hc = health_checker.clone();
                     move || health::readiness_handler(hc.clone())
-                }));
+                }))
+                .merge(api::build_rest_router(rest_state));
 
             let listener = match tokio::net::TcpListener::bind(addr).await {
                 Ok(l) => l,

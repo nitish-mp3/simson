@@ -136,7 +136,7 @@ async def async_run_network_diagnostics(
     """Run connectivity tests and return a results dict.
 
     Tests:
-    1. gRPC port reachability
+    1. Engine health endpoint reachability (HTTP 8080)
     2. SIP port availability
     3. WebSocket port availability
     4. STUN server connectivity
@@ -154,10 +154,9 @@ async def async_run_network_diagnostics(
     def _get(key: str, default: Any = None) -> Any:
         return opts.get(key, data.get(key, default))
 
-    # 1. gRPC
-    grpc_host = _get(CONF_ENGINE_HOST, DEFAULT_ENGINE_HOST)
-    grpc_port = _get(CONF_GRPC_PORT, DEFAULT_GRPC_PORT)
-    results["grpc"] = await _check_tcp_port(grpc_host, grpc_port)
+    # 1. Engine health endpoint (port 8080)
+    engine_host = _get(CONF_ENGINE_HOST, DEFAULT_ENGINE_HOST)
+    results["health_endpoint"] = await _check_tcp_port(engine_host, 8080)
 
     # 2. SIP port
     sip_port = _get(CONF_SIP_PORT, DEFAULT_SIP_PORT)
