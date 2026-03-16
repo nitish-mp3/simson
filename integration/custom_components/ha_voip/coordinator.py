@@ -286,7 +286,20 @@ class VoipDataUpdateCoordinator(DataUpdateCoordinator[VoipData]):
             update_interval=timedelta(seconds=UPDATE_INTERVAL_SECONDS),
             config_entry=config_entry,
         )
-        host = config_entry.data.get(CONF_ENGINE_HOST, DEFAULT_ENGINE_HOST)
+        host = (
+            config_entry.data.get(CONF_ENGINE_HOST)
+            or config_entry.options.get(CONF_ENGINE_HOST)
+        )
+        if not host:
+            # Auto-detect: the add-on runs with host_network=true and binds on the
+            # HA machine's own IP.  hass.config.api.host is that same IP, so gRPC
+            # traffic from the core container reaches the add-on correctly.
+            _api = getattr(hass.config, "api", None)
+            _api_host = getattr(_api, "host", None)
+            if _api_host and _api_host not in ("", "0.0.0.0"):
+                host = _api_host
+            else:
+                host = DEFAULT_ENGINE_HOST
         port = config_entry.data.get(CONF_GRPC_PORT, DEFAULT_GRPC_PORT)
         self.grpc_client = GrpcClient(host, port)
         self._event_task: asyncio.Task[None] | None = None

@@ -1,5 +1,5 @@
 name: Simson
-version: "1.1.1"
+version: "1.1.2"
 slug: ha_voip_engine
 description: Embedded VoIP engine for the HA VoIP integration (SIP/TURN/WebRTC)
 url: https://github.com/nitish-mp3/simson

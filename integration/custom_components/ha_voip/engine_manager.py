@@ -234,12 +234,12 @@ class EngineManager:
                 stderr=asyncio.subprocess.PIPE,
             )
         except FileNotFoundError:
-            _LOGGER.error(
-                "voip-engine binary not found at '%s'. "
-                "Install the engine or set engine_binary_path in options.",
+            _LOGGER.info(
+                "voip-engine binary not found at '%s'; "
+                "assuming engine is already running as an HA add-on.",
                 binary,
             )
-            self._set_state(ENGINE_STATE_ERROR)
+            self._set_state(ENGINE_STATE_RUNNING)
             return
         except OSError as exc:
             _LOGGER.error("Failed to start voip-engine: %s", exc)
